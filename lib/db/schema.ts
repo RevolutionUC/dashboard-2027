@@ -55,7 +55,7 @@ export const user = pgTable("user", {
   banned: boolean("banned").default(false),
   banReason: text("banReason"),
   banExpires: timestamp("banExpires", { withTimezone: true }),
-});
+}).enableRLS();
 
 export const session = pgTable(
   "session",
@@ -74,7 +74,7 @@ export const session = pgTable(
     impersonatedBy: text("impersonatedBy"),
   },
   (table) => [index("session_userId_idx").on(table.userId)],
-);
+).enableRLS();
 
 export const account = pgTable(
   "account",
@@ -100,7 +100,7 @@ export const account = pgTable(
     updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull(),
   },
   (table) => [index("account_userId_idx").on(table.userId)],
-);
+).enableRLS();
 
 export const verification = pgTable(
   "verification",
@@ -113,7 +113,7 @@ export const verification = pgTable(
     updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("verification_identifier_idx").on(table.identifier)],
-);
+).enableRLS();
 
 // ============================================
 // RevolutionUC Application Tables
@@ -156,7 +156,7 @@ export const participants = pgTable(
     index("participants_status_idx").on(table.status),
     index("participants_userId_idx").on(table.user_id),
   ],
-);
+).enableRLS();
 
 export const events = pgTable(
   "events",
@@ -173,7 +173,7 @@ export const events = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("events_type_idx").on(table.eventType)],
-);
+).enableRLS();
 
 // Day-of Schedule Table
 export const dayOfSchedule = pgTable(
@@ -193,7 +193,7 @@ export const dayOfSchedule = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("day_of_schedule_visibility_idx").on(table.visibility)],
-);
+).enableRLS();
 
 export const eventRegistrations = pgTable(
   "event_registrations",
@@ -212,7 +212,7 @@ export const eventRegistrations = pgTable(
     index("event_registrations_participant_idx").on(table.participant_id),
     index("event_registrations_event_idx").on(table.eventId),
   ],
-);
+).enableRLS();
 
 // ============================================
 // Admin Related Tables
@@ -240,7 +240,7 @@ export const accessRequests = pgTable(
     index("access_requests_userId_idx").on(table.userId),
     index("access_requests_status_idx").on(table.status),
   ],
-);
+).enableRLS();
 
 export const confirmTokens = pgTable(
   "confirm_tokens",
@@ -259,7 +259,7 @@ export const confirmTokens = pgTable(
     index("confirm_tokens_token_idx").on(table.token),
     index("confirm_tokens_participant_idx").on(table.participantId),
   ],
-);
+).enableRLS();
 
 export const auditLogs = pgTable(
   "audit_log",
@@ -283,7 +283,7 @@ export const auditLogs = pgTable(
     index("audit_logs_action_idx").on(table.action),
     index("audit_logs_event_time_idx").on(table.event_time),
   ],
-);
+).enableRLS();
 // Judge and Category Tables
 // ============================================
 
@@ -301,7 +301,7 @@ export const categories = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("categories_type_idx").on(table.type)],
-);
+).enableRLS();
 
 export const categoriesRelations = relations(categories, ({ many }) => ({
   judgeGroups: many(judgeGroups),
@@ -327,7 +327,7 @@ export const judgeGroups = pgTable(
     index("judge_groups_category_idx").on(table.categoryId),
     index("judge_groups_name_idx").on(table.name),
   ],
-);
+).enableRLS();
 
 export const judgeGroupsRelations = relations(judgeGroups, ({ one, many }) => ({
   category: one(categories, {
@@ -362,7 +362,7 @@ export const judges = pgTable(
     index("judges_category_idx").on(table.categoryId),
     index("judges_group_idx").on(table.judgeGroupId),
   ],
-);
+).enableRLS();
 
 export const judgesRelations = relations(judges, ({ one, many }) => ({
   category: one(categories, {
@@ -399,7 +399,7 @@ export const projects = pgTable(
     index("projects_status_idx").on(table.status),
     index("projects_location_idx").on(table.location),
   ],
-);
+).enableRLS();
 
 export const projectsRelations = relations(projects, ({ many }) => ({
   submissions: many(submissions),
@@ -423,7 +423,7 @@ export const submissions = pgTable(
     index("submissions_project_idx").on(table.projectId),
     index("submissions_category_idx").on(table.categoryId),
   ],
-);
+).enableRLS();
 
 export const submissionsRelations = relations(submissions, ({ one }) => ({
   project: one(projects, {
@@ -456,7 +456,7 @@ export const assignments = pgTable(
     index("assignments_project_idx").on(table.projectId),
     index("assignments_judge_group_idx").on(table.judgeGroupId),
   ],
-);
+).enableRLS();
 
 export const assignmentsRelations = relations(assignments, ({ one }) => ({
   judgeGroup: one(judgeGroups, {
@@ -496,7 +496,7 @@ export const evaluations = pgTable(
     index("evaluations_judge_idx").on(table.judgeId),
     index("evaluations_category_idx").on(table.categoryId),
   ],
-);
+).enableRLS();
 
 export const evaluationsRelations = relations(evaluations, ({ one }) => ({
   project: one(projects, {

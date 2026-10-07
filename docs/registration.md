@@ -4,6 +4,10 @@ This branch is paired with the form branch in `RevolutionUC/website-2027`. The w
 
 ## Database and rollout
 
+The dedicated Supabase project **RevUC-2027** (`slissxtjbeylijkcjogn`) now has migrations 0000–0009 applied and the private `revuc-2027-resumes` bucket created. Its existing interest tables were retained. The Drizzle ledger records the applied source migrations; do not replay the bootstrap SQL. Migration 0009 also protects the dashboard's base tables from the public Data API. Both applications use trusted server database connections; browser publishable keys cannot read these application tables.
+
+Database connection checks used the project's session pooler with `sslmode=verify-full` and the official root certificate downloaded from Database Settings. Configure the certificate path on each runtime host using `sslrootcert` in `DATABASE_URL`. No production deployment or mail delivery was performed, and the actual event settings remain unset with registration closed.
+
 Run migrations from this repository with `DATABASE_URL` set to the intended development database first:
 
 ```powershell

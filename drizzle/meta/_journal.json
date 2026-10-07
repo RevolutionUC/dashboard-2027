@@ -64,6 +64,13 @@
       "when": 1791343593332,
       "tag": "0008_role_checkin",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791349061262,
+      "tag": "0009_private_2027_tables",
+      "breakpoints": true
     }
   ]
 }
