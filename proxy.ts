@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
 // Routes that don't require authentication at all
-const publicRoutes = ["/sign-in", "/sign-up", "/error", '/judgingportal'];
+const publicRoutes = ["/sign-in", "/sign-up", "/error", "/judgingportal"];
 
 // API routes that should be accessible without auth
 const publicApiRoutes = ["/api/auth"];
@@ -34,6 +34,13 @@ export function proxy(request: NextRequest) {
 
   // If no session, redirect to sign-in
   if (!sessionCookie) {
+    if (
+      pathname.startsWith("/api/registration") ||
+      pathname === "/api/qr" ||
+      pathname.startsWith("/api/participants/")
+    ) {
+      return NextResponse.json({ error: "Forbidden", message: "Forbidden" }, { status: 403 });
+    }
     const signInUrl = new URL("/sign-in", request.url);
     signInUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(signInUrl);

@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { evaluations, judges } from "@/lib/db/schema";
+import { assertJudgeApplicationApproved } from "@/lib/registration/judges";
 
 async function runMutation(
   operation: () => Promise<void>,
@@ -33,15 +34,11 @@ async function updateEvaluationAndRevalidate(
 ) {
   return runMutation(
     async () => {
+      await assertJudgeApplicationApproved(judgeId);
       await db
         .update(evaluations)
         .set(patch)
-        .where(
-          and(
-            eq(evaluations.judgeId, judgeId),
-            eq(evaluations.projectId, projectId),
-          ),
-        );
+        .where(and(eq(evaluations.judgeId, judgeId), eq(evaluations.projectId, projectId)));
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}`);
@@ -51,22 +48,14 @@ async function updateEvaluationAndRevalidate(
   );
 }
 
-export async function saveRanking(
-  judgeId: string,
-  projectId: string,
-  bordaScore: number,
-) {
+export async function saveRanking(judgeId: string, projectId: string, bordaScore: number) {
   return runMutation(
     async () => {
+      await assertJudgeApplicationApproved(judgeId);
       await db
         .update(evaluations)
         .set({ categoryBordaScore: bordaScore })
-        .where(
-          and(
-            eq(evaluations.judgeId, judgeId),
-            eq(evaluations.projectId, projectId),
-          ),
-        );
+        .where(and(eq(evaluations.judgeId, judgeId), eq(evaluations.projectId, projectId)));
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}/ranking`);
@@ -79,6 +68,7 @@ export async function saveRanking(
 export async function resetAllRankings(judgeId: string) {
   return runMutation(
     async () => {
+      await assertJudgeApplicationApproved(judgeId);
       await db
         .update(evaluations)
         .set({ categoryBordaScore: 0 })
@@ -95,10 +85,8 @@ export async function resetAllRankings(judgeId: string) {
 export async function finalizeRankings(judgeId: string) {
   return runMutation(
     async () => {
-      await db
-        .update(judges)
-        .set({ judgingPhase: "finalized" })
-        .where(eq(judges.id, judgeId));
+      await assertJudgeApplicationApproved(judgeId);
+      await db.update(judges).set({ judgingPhase: "finalized" }).where(eq(judges.id, judgeId));
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}`);
@@ -121,15 +109,11 @@ export async function saveEvaluationScore(
 
   try {
     // Get existing evaluation
+    await assertJudgeApplicationApproved(judgeId);
     const existingEval = await db
       .select({ scores: evaluations.scores })
       .from(evaluations)
-      .where(
-        and(
-          eq(evaluations.judgeId, judgeId),
-          eq(evaluations.projectId, projectId),
-        ),
-      )
+      .where(and(eq(evaluations.judgeId, judgeId), eq(evaluations.projectId, projectId)))
       .limit(1);
 
     if (existingEval.length === 0) {
@@ -148,12 +132,7 @@ export async function saveEvaluationScore(
     await db
       .update(evaluations)
       .set({ scores: newScores as number[] })
-      .where(
-        and(
-          eq(evaluations.judgeId, judgeId),
-          eq(evaluations.projectId, projectId),
-        ),
-      );
+      .where(and(eq(evaluations.judgeId, judgeId), eq(evaluations.projectId, projectId)));
 
     revalidatePath(`/judgingportal/${judgeId}`);
 
@@ -164,19 +143,12 @@ export async function saveEvaluationScore(
     console.error("Error saving evaluation score:", error);
     return {
       success: false,
-      error:
-        error instanceof Error
-          ? error.message
-          : "Failed to save evaluation score",
+      error: error instanceof Error ? error.message : "Failed to save evaluation score",
     };
   }
 }
 
-export async function saveCategoryRelevance(
-  judgeId: string,
-  projectId: string,
-  relevance: number,
-) {
+export async function saveCategoryRelevance(judgeId: string, projectId: string, relevance: number) {
   if (relevance < 1 || relevance > 5) {
     return { success: false, error: "Invalid relevance value" };
   }
@@ -190,11 +162,7 @@ export async function saveCategoryRelevance(
   );
 }
 
-export async function saveNote(
-  judgeId: string,
-  projectId: string,
-  note: string,
-) {
+export async function saveNote(judgeId: string, projectId: string, note: string) {
   if (note.length > 10000) {
     return { success: false, error: "Note cannot exceed 10000 characters" };
   }

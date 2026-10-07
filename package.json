@@ -10,7 +10,9 @@
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "fraud-check": "tsx scripts/fraud-detection/index.ts"
+    "fraud-check": "tsx scripts/fraud-detection/index.ts",
+    "test": "tsx --test tests/registration.test.ts",
+    "test:http": "tsx --test tests/registration.http.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

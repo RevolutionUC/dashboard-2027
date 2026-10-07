@@ -1,14 +1,20 @@
 import { db } from "@/lib/db";
-import { participants, events, eventRegistrations } from "@/lib/db/schema";
-import { auth } from "@/lib/auth";
+import { events, eventRegistrations } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
-import { headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { logAction } from "@/lib/audit";
 import { getParticipantByUserId } from "@/lib/api/qr-participant";
+import {
+  requireEventStaff,
+  assertRegistrationOrigin,
+  registrationError,
+} from "@/lib/api/registration-auth";
+import { setAttendance } from "@/lib/registration/attendance";
 
 // GET /api/qr - Get participant info or events list
 export async function GET(request: NextRequest) {
+  const access = await requireEventStaff();
+  if ("error" in access) return access.error;
   const { searchParams } = new URL(request.url);
   const user_id = searchParams.get("id");
   const action = searchParams.get("action");
@@ -34,10 +40,7 @@ export async function GET(request: NextRequest) {
 
     // Fetch participant info
     if (!user_id) {
-      return NextResponse.json(
-        { error: "Missing participant ID" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Missing participant ID" }, { status: 400 });
     }
 
     const participantLookup = await getParticipantByUserId(user_id);
@@ -57,21 +60,15 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // Check authentication
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
-
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const access = await requireEventStaff();
+    if ("error" in access) return access.error;
+    assertRegistrationOrigin(request);
+    const session = access.info.session;
 
     const { user_id, mode, eventId } = await request.json();
 
     if (!user_id || !mode) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
     // Find participant
@@ -84,16 +81,10 @@ export async function POST(request: NextRequest) {
     // Main check-in
     if (mode === "checkin") {
       if (participant.checkedIn) {
-        return NextResponse.json(
-          { error: "Already checked in" },
-          { status: 409 },
-        );
+        return NextResponse.json({ error: "Already checked in" }, { status: 409 });
       }
 
-      await db
-        .update(participants)
-        .set({ checkedIn: true, status: "CHECKED_IN", updatedAt: new Date() })
-        .where(eq(participants.user_id, user_id));
+      await setAttendance(user_id, "CHECKED_IN", true);
 
       await logAction({
         userId: session.user.id,
@@ -118,29 +109,21 @@ export async function POST(request: NextRequest) {
     // Workshop/Food registration
     if (mode === "workshop" || mode === "food") {
       if (!eventId) {
-        return NextResponse.json(
-          { error: "Event ID required" },
-          { status: 400 },
-        );
+        return NextResponse.json({ error: "Event ID required" }, { status: 400 });
       }
 
       // Participant must be checked in before registering for food/workshop
       if (!participant.checkedIn) {
         return NextResponse.json(
           {
-            error:
-              "Participant must be checked in before registering for a " + mode,
+            error: "Participant must be checked in before registering for a " + mode,
           },
           { status: 403 },
         );
       }
 
       // Check event exists
-      const [event] = await db
-        .select()
-        .from(events)
-        .where(eq(events.id, eventId))
-        .limit(1);
+      const [event] = await db.select().from(events).where(eq(events.id, eventId)).limit(1);
 
       if (!event) {
         return NextResponse.json({ error: "Event not found" }, { status: 404 });
@@ -159,10 +142,7 @@ export async function POST(request: NextRequest) {
         .limit(1);
 
       if (existing) {
-        return NextResponse.json(
-          { error: "Already registered for this event" },
-          { status: 409 },
-        );
+        return NextResponse.json({ error: "Already registered for this event" }, { status: 409 });
       }
 
       // Check capacity
@@ -178,9 +158,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Register
-      await db
-        .insert(eventRegistrations)
-        .values({ participant_id: user_id, eventId });
+      await db.insert(eventRegistrations).values({ participant_id: user_id, eventId });
 
       await logAction({
         userId: session.user.id,
@@ -207,7 +185,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: "Invalid mode" }, { status: 400 });
   } catch (error) {
-    console.error("QR API error:", error);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return registrationError(error);
   }
 }

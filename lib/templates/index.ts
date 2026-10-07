@@ -27,101 +27,117 @@ import * as WaiverUpdate from "./WaiverUpdate";
 import * as WelcomeEmail from "./WelcomeEmail";
 
 interface SharedEmailProps {
-    firstName?: string;
+  firstName?: string;
 }
 
 interface GeneralEmailProps extends SharedEmailProps {
-    body?: string;
+  body?: string;
 }
 
-type EmailTemplateProps =
-    | SharedEmailProps
-    | GeneralEmailProps
-    | Record<string, never>;
+type EmailTemplateProps = SharedEmailProps | GeneralEmailProps | Record<string, never>;
 
 export interface EmailTemplateMeta {
-    id: string;
-    name: string;
-    subject: string;
-    description: string;
-    component: React.ComponentType<any>;
-    requiredProps?: string[];
+  id: string;
+  name: string;
+  subject: string;
+  description: string;
+  component: React.ComponentType<any>;
+  requiredProps?: string[];
 }
 
 interface TemplateMeta {
-    id: string;
-    name: string;
-    subject: string;
-    description: string;
-    requiredProps?: string[];
+  id: string;
+  name: string;
+  subject: string;
+  description: string;
+  requiredProps?: string[];
 }
 
 interface TemplateModule {
-    meta?: TemplateMeta;
-    default?: React.ComponentType<any>;
+  meta?: TemplateMeta;
+  default?: React.ComponentType<any>;
 }
 
 type TemplateNamespace = {
-    default?: React.ComponentType<any>;
-    [key: string]: unknown;
+  default?: React.ComponentType<any>;
+  [key: string]: unknown;
 };
 
 function extractTemplateMeta(module: TemplateNamespace): TemplateMeta | undefined {
-    if (module.meta && typeof module.meta === "object") {
-        return module.meta as TemplateMeta;
-    }
-    const namedMeta = Object.entries(module).find(
-        ([key, value]) => key.endsWith("Meta") && value && typeof value === "object",
-    );
-    return namedMeta?.[1] as TemplateMeta | undefined;
+  if (module.meta && typeof module.meta === "object") {
+    return module.meta as TemplateMeta;
+  }
+  const namedMeta = Object.entries(module).find(
+    ([key, value]) => key.endsWith("Meta") && value && typeof value === "object",
+  );
+  return namedMeta?.[1] as TemplateMeta | undefined;
 }
 
 const rawModules: TemplateNamespace[] = [
-    ConfirmAttendance, ConfirmAttendanceFollowUp, DateChange,
-    GeneralEmail, InfoEmail1, InfoEmail2, InfoEmail3, InfoEmail4,
-    InfoEmailCTF, InfoEmailJudges, InfoEmailWaitlist, InfoEmailWaitlist2,
-    InfoEmailWaitlistPass1, IgnorePreviousEmail, JudgePortalLink, LatticeResetPassword,
-    MarketingEmail, PostEventEmail, PostEventJudgeEmail, PostEventSurveyReminder,
-    RegistrationOpen, SubmissionReminder, VerifyEmail, WaiverUpdate, WelcomeEmail,
+  ConfirmAttendance,
+  ConfirmAttendanceFollowUp,
+  DateChange,
+  GeneralEmail,
+  InfoEmail1,
+  InfoEmail2,
+  InfoEmail3,
+  InfoEmail4,
+  InfoEmailCTF,
+  InfoEmailJudges,
+  InfoEmailWaitlist,
+  InfoEmailWaitlist2,
+  InfoEmailWaitlistPass1,
+  IgnorePreviousEmail,
+  JudgePortalLink,
+  LatticeResetPassword,
+  MarketingEmail,
+  PostEventEmail,
+  PostEventJudgeEmail,
+  PostEventSurveyReminder,
+  RegistrationOpen,
+  SubmissionReminder,
+  VerifyEmail,
+  WaiverUpdate,
+  WelcomeEmail,
 ];
 
 const modules: TemplateModule[] = rawModules.map((module) => ({
-    meta: extractTemplateMeta(module),
-    default: module.default,
+  meta: extractTemplateMeta(module),
+  default: module.default,
 }));
 
 export const emailTemplates: EmailTemplateMeta[] = modules
-    .filter((m): m is Required<TemplateModule> => !!m.meta && !!m.default)
-    .map((m) => ({ ...m.meta!, component: m.default! }));
+  .filter((m): m is Required<TemplateModule> => !!m.meta && !!m.default)
+  .map((m) => ({ ...m.meta!, component: m.default! }));
 
 export function getTemplateById(id: string): EmailTemplateMeta | undefined {
-    return emailTemplates.find((template) => template.id === id);
+  return emailTemplates.find((template) => template.id === id);
 }
 
 function getAllTemplates(): EmailTemplateMeta[] {
-    return emailTemplates;
+  return emailTemplates;
 }
 
 export interface RenderEmailProps {
-    [key: string]: any;
+  [key: string]: any;
 }
 
 export async function renderTemplateToHtml(
-    templateId: string,
-    props: RenderEmailProps,
+  templateId: string,
+  props: RenderEmailProps,
 ): Promise<string | null> {
-    const template = getTemplateById(templateId);
-    if (!template) return null;
-    const element = React.createElement(template.component, props);
-    return await render(element);
+  const template = getTemplateById(templateId);
+  if (!template) return null;
+  const element = React.createElement(template.component, props);
+  return render(element);
 }
 
 export async function renderTemplateToText(
-    templateId: string,
-    props: RenderEmailProps,
+  templateId: string,
+  props: RenderEmailProps,
 ): Promise<string | null> {
-    const template = getTemplateById(templateId);
-    if (!template) return null;
-    const element = React.createElement(template.component, props);
-    return await render(element, { plainText: true });
+  const template = getTemplateById(templateId);
+  if (!template) return null;
+  const element = React.createElement(template.component, props);
+  return render(element, { plainText: true });
 }

@@ -28,17 +28,11 @@ interface EmailLayoutProps {
   children: React.ReactNode;
 }
 
-export const EmailLayout: React.FC<EmailLayoutProps> = ({
-  preview,
-  children,
-}) => {
+export const EmailLayout: React.FC<EmailLayoutProps> = ({ preview, children }) => {
   return (
     <Html lang="en">
       <Head>
-        <link
-          href="https://fonts.googleapis.com/css?family=Lato:400,700"
-          rel="stylesheet"
-        />
+        <link href="https://fonts.googleapis.com/css?family=Lato:400,700" rel="stylesheet" />
       </Head>
       <Preview>{preview}</Preview>
       <Body style={main}>
@@ -47,7 +41,10 @@ export const EmailLayout: React.FC<EmailLayoutProps> = ({
           <Section style={header}>
             <Link href="https://revolutionuc.com" target="_blank">
               <Img
-                src={process.env.NEXT_PUBLIC_LOGO_URL ?? `${process.env.BETTER_AUTH_URL}/revuc_2026_logo.png`}
+                src={
+                  process.env.NEXT_PUBLIC_LOGO_URL ??
+                  `${process.env.BETTER_AUTH_URL}/revuc_2026_logo.png`
+                }
                 alt="RevolutionUC logo"
                 width="100"
                 style={logoImage}
@@ -55,7 +52,7 @@ export const EmailLayout: React.FC<EmailLayoutProps> = ({
             </Link>
             <Text style={headerTitle}>
               <Link href="https://revolutionuc.com" style={headerLink}>
-                RevolutionUC - Spring 2026
+                RevolutionUC 2027
               </Link>
             </Text>
           </Section>
@@ -79,7 +76,7 @@ export const EmailLayout: React.FC<EmailLayoutProps> = ({
             <Text style={signature}>
               Best Regards,
               <br />
-             The RevolutionUC Team
+              The RevolutionUC Team
             </Text>
           </Section>
 
@@ -108,30 +105,19 @@ export const EmailLayout: React.FC<EmailLayoutProps> = ({
                 Website
               </Link>
               {" • "}
-              <Link
-                href="https://twitter.com/revolution_uc"
-                style={footerLink}
-              >
+              <Link href="https://twitter.com/revolution_uc" style={footerLink}>
                 Twitter
               </Link>
               {" • "}
-              <Link
-                href="https://instagram.com/revolution.uc"
-                style={footerLink}
-              >
+              <Link href="https://instagram.com/revolution.uc" style={footerLink}>
                 Instagram
               </Link>
               {" • "}
-              <Link
-                href="https://www.tiktok.com/@revolution.uc"
-                style={footerLink}
-              >
+              <Link href="https://www.tiktok.com/@revolution.uc" style={footerLink}>
                 TikTok
               </Link>
             </Text>
-            <Text style={copyright}>
-              © {new Date().getFullYear()} RevolutionUC
-            </Text>
+            <Text style={copyright}>© {new Date().getFullYear()} RevolutionUC</Text>
           </Section>
         </Container>
       </Body>
@@ -272,4 +258,3 @@ const copyright = {
   wordWrap: "break-word" as const,
   overflowWrap: "break-word" as const,
 };
-

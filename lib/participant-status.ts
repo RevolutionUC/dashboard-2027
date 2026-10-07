@@ -3,6 +3,7 @@ export const PARTICIPANT_STATUSES = [
   "CONFIRMED",
   "WAITLISTED",
   "CHECKED_IN",
+  "WITHDRAWN",
 ] as const;
 
 export type ParticipantStatus = (typeof PARTICIPANT_STATUSES)[number];

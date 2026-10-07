@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
   CalendarDays,
@@ -19,11 +19,7 @@ import {
   ChartLine,
 } from "lucide-react";
 import { type ComponentType, useEffect, useState } from "react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Sidebar,
   SidebarContent,
@@ -42,6 +38,7 @@ import Link from "next/link";
 
 // Menu items (without Plan and Judging, which have sub-items).
 const items = [
+  { title: "Registration", url: "/registration", icon: ClipboardList, roles: ["admin", "lead"] },
   {
     title: "Dashboard",
     url: "/dashboard",
@@ -180,61 +177,65 @@ export function AppSidebar() {
             <SidebarGroupLabel>Loading...</SidebarGroupLabel>
           </SidebarGroup>
         ) : (
-        <>
-        <SidebarGroup>
-          <SidebarGroupLabel>Application</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {items
-                .filter((item) => !item.roles || item.roles.includes(dashboardRole || ""))
-                .map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild>
-                    <Link href={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+          <>
+            <SidebarGroup>
+              <SidebarGroupLabel>Application</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {items
+                    .filter((item) => !item.roles || item.roles.includes(dashboardRole || ""))
+                    .map((item) => (
+                      <SidebarMenuItem key={item.title}>
+                        <SidebarMenuButton asChild>
+                          <Link href={item.url}>
+                            <item.icon />
+                            <span>{item.title}</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
 
-              {/* Plan with collapsible sub-menu - not for organizers */}
-              {!isOrganizer && (
-                <CollapsibleSidebarSection icon={NotepadText} label="Plan" items={planSubItems} />
-              )}
+                  {/* Plan with collapsible sub-menu - not for organizers */}
+                  {!isOrganizer && (
+                    <CollapsibleSidebarSection
+                      icon={NotepadText}
+                      label="Plan"
+                      items={planSubItems}
+                    />
+                  )}
 
-              {/* Judging with collapsible sub-menu */}
-              <CollapsibleSidebarSection icon={Gavel} label="Judging" items={judgingSubItems} />
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+                  {/* Judging with collapsible sub-menu */}
+                  <CollapsibleSidebarSection icon={Gavel} label="Judging" items={judgingSubItems} />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
 
-        {isAdmin && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Admin</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild>
-                    <a href="/admin/approvals">
-                      <ShieldCheck />
-                      <span>Approvals</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild>
-                    <a href="/admin/logs">
-                      <ScrollText />
-                      <span>Audit Logs</span>
-                    </a>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-        </>
+            {isAdmin && (
+              <SidebarGroup>
+                <SidebarGroupLabel>Admin</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild>
+                        <a href="/admin/approvals">
+                          <ShieldCheck />
+                          <span>Approvals</span>
+                        </a>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                      <SidebarMenuButton asChild>
+                        <a href="/admin/logs">
+                          <ScrollText />
+                          <span>Audit Logs</span>
+                        </a>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
+          </>
         )}
       </SidebarContent>
     </Sidebar>

@@ -2,8 +2,10 @@ import { eq } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { categories, judgeGroups, judges } from "@/lib/db/schema";
+import { assertJudgeApplicationApproved } from "@/lib/registration/judges";
 
 export async function getJudgeContext(judgeID: string) {
+  await assertJudgeApplicationApproved(judgeID);
   const judge = await db
     .select({
       id: judges.id,

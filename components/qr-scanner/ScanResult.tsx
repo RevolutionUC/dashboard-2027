@@ -77,7 +77,7 @@ export function ScanResult({
   // Scanning state - show participant info and confirm button
   if (status === "scanning" && participant) {
     const isBlocked =
-      mode === "checkin" && (participant.status === "WAITLISTED" || participant.checkedIn);
+      mode === "checkin" && (participant.status !== "CONFIRMED" || participant.checkedIn);
     const needsEvent = (mode === "workshop" || mode === "food") && !selectedEvent;
 
     return (
@@ -129,9 +129,9 @@ export function ScanResult({
           {isBlocked && (
             <p className="text-yellow-700 bg-yellow-50 p-3 rounded text-center text-sm">
               ⚠️{" "}
-              {participant.status === "WAITLISTED"
-                ? "Waitlisted - cannot check in"
-                : "Already checked in"}
+              {participant.checkedIn
+                ? "Already checked in"
+                : "Attendance must be confirmed before check-in"}
             </p>
           )}
 

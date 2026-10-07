@@ -29,6 +29,41 @@
       "when": 1774744093219,
       "tag": "0003_implement_judging_features",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791341095835,
+      "tag": "0004_2027_registration",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791341316368,
+      "tag": "0005_registration_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791342180862,
+      "tag": "0006_registration_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791342743185,
+      "tag": "0007_project_rosters",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791343593332,
+      "tag": "0008_role_checkin",
+      "breakpoints": true
     }
   ]
 }
