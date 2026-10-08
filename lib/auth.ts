@@ -12,14 +12,14 @@ import { logAction } from "./audit";
 if (
   !process.env.BETTER_AUTH_SECRET ||
   !process.env.BETTER_AUTH_URL ||
-  !process.env.GITHUB_CLIENT_ID ||
-  !process.env.GITHUB_CLIENT_SECRET
+  !process.env.GOOGLE_CLIENT_ID ||
+  !process.env.GOOGLE_CLIENT_SECRET
 ) {
-  throw new Error("BETTER AUTH SECRET, URL OR GITHUB CLIENT ID OR SECRET MISSING ");
+  throw new Error("BETTER AUTH SECRET, URL OR GOOGLE CLIENT ID OR SECRET MISSING ");
 }
 
 // Admin emails that automatically get admin role
-const ADMIN_EMAILS = ["bilwarad@mail.uc.edu", "karthikeya.rachamolla@gmail.com"];
+const ADMIN_EMAILS = ["bilwarad@mail.uc.edu", "karthikeya.rachamolla@gmail.com", "adit.kulkarni27@gmail.com"];
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
@@ -29,9 +29,10 @@ export const auth = betterAuth({
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
   socialProviders: {
-    github: {
-      clientId: process.env.GITHUB_CLIENT_ID!,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+  
     },
   },
   plugins: [
