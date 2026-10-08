@@ -3,10 +3,12 @@ import Mailgun from "mailgun.js";
 // Initialize Mailgun client
 const mailgun = new Mailgun(FormData);
 
-const mg = mailgun.client({
-  username: "api",
-  key: process.env.MAILGUN_API_KEY || "",
-});
+const mg = process.env.MAILGUN_API_KEY
+  ? mailgun.client({
+      username: "api",
+      key: process.env.MAILGUN_API_KEY,
+    })
+  : null;
 
 const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || "revolutionuc.com";
 const FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL || "RevolutionUC <info@revolutionuc.com>";
