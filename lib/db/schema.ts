@@ -26,6 +26,17 @@ export const accessRequestStatus = pgEnum("access_request_status", [
   "denied",
 ]);
 
+export const suggestionStatus = pgEnum("suggestion_status", [
+  "pending",
+  "accepted",
+  "dismissed",
+]);
+
+export const actionItemStatus = pgEnum("action_item_status", [
+  "open",
+  "completed",
+]);
+
 export const actions = pgEnum("actions", [
   "SIGNED_IN",
   "CHECKIN",
@@ -272,6 +283,49 @@ export const accessRequests = pgTable(
   (table) => [
     index("access_requests_userId_idx").on(table.userId),
     index("access_requests_status_idx").on(table.status),
+  ],
+);
+
+export const suggestions = pgTable(
+  "suggestions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    content: text("content").notNull(),
+    status: suggestionStatus("status").notNull().default("pending"),
+    submitterUserId: text("submitter_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("suggestions_status_idx").on(table.status),
+    index("suggestions_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const actionItems = pgTable(
+  "action_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    details: text("details"),
+    status: actionItemStatus("status").notNull().default("open"),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    sourceSuggestionId: uuid("source_suggestion_id").references(
+      () => suggestions.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("action_items_status_idx").on(table.status),
+    index("action_items_created_at_idx").on(table.createdAt),
   ],
 );
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DashboardActions } from "@/components/dashboard/dashboard-actions";
 
 interface DashboardStats {
   total: number;
@@ -63,7 +64,7 @@ export default function DashboardPage() {
           {error && ` (error: ${error})`}
         </p>
       </div>
-
+      <DashboardActions />
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card">
         <Card>
           <CardHeader>
