@@ -5,12 +5,14 @@ import {
     renderTemplateToHtml,
     renderTemplateToText,
 } from "@/lib/templates";
-import formData from "form-data";
-import Mailgun from "mailgun.js";
+import { getFromAddress, getResend } from "@/lib/resend";
 import { db } from "@/lib/db";
 import { accessRequests, confirmTokens, participants, judges } from "@/lib/db/schema";
 import { eq, inArray, isNull, and } from "drizzle-orm";
-import { randomBytes } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
+
+// Batch sends take several Resend calls; allow up to 60s on serverless hosts.
+export const maxDuration = 60;
 
 type RecipientType = "all" | "status" | "specific" | "specific-judges" | "judges";
 
@@ -24,6 +26,62 @@ interface SendEmailRequest {
 // Templates that use per-recipient confirmation URLs
 const CONFIRM_ATTENDANCE_ID = "confirm-attendance";
 const JUDGE_PORTAL_LINK_ID = "judge-portal-link";
+
+// Resend allows at most 100 emails per batch request.
+const BATCH_SIZE = 100;
+// Pause between batch requests to stay under Resend's per-second rate limit.
+const BATCH_DELAY_MS = 600;
+// Retries per batch after a rate_limit_exceeded error.
+const MAX_RATE_LIMIT_RETRIES = 2;
+
+type RecipientVars = {
+    firstName: string;
+    yesUrl?: string;
+    noUrl?: string;
+    portalUrl?: string;
+};
+
+// The template is rendered once with these tokens, then each recipient's
+// values are substituted in. Tokens are upper-case so upper-casing by the
+// plain-text renderer leaves them unchanged.
+const PLACEHOLDERS: Record<keyof RecipientVars, string> = {
+    firstName: "__RUC_FIRSTNAME__",
+    yesUrl: "__RUC_YESURL__",
+    noUrl: "__RUC_NOURL__",
+    portalUrl: "__RUC_PORTALURL__",
+};
+const PLACEHOLDER_KEYS = Object.keys(PLACEHOLDERS) as (keyof RecipientVars)[];
+const PLACEHOLDER_PATTERN = new RegExp(
+    Object.values(PLACEHOLDERS).join("|"),
+    "g",
+);
+// Matches anything that looks like a placeholder, including mangled ones
+const ANY_PLACEHOLDER_PATTERN = /__ruc_[a-z0-9_]*?__/gi;
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function fillPlaceholders(
+    content: string,
+    vars: RecipientVars,
+    escape: boolean,
+): string {
+    return content.replace(PLACEHOLDER_PATTERN, (token) => {
+        const key = PLACEHOLDER_KEYS.find((k) => PLACEHOLDERS[k] === token);
+        const value = (key && vars[key]) ?? "";
+        return escape ? escapeHtml(value) : value;
+    });
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function POST(request: NextRequest) {
     try {
@@ -99,14 +157,14 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+        const resend = getResend();
+        if (!resend) {
             return NextResponse.json(
-                { error: "Mailgun configuration is missing" },
+                { error: "Resend configuration is missing" },
                 { status: 500 },
             );
         }
 
-        // Fetch recipients and build personalization map (email → {firstName, userId})
         let recipients: string[] = [];
         const participantMap = new Map<string, { firstName: string; userId: string }>();
 
@@ -173,6 +231,14 @@ export async function POST(request: NextRequest) {
                 { status: 500 },
             );
         }
+
+        const seenEmails = new Set<string>();
+        recipients = recipients.filter((email) => {
+            const key = email.toLowerCase();
+            if (seenEmails.has(key)) return false;
+            seenEmails.add(key);
+            return true;
+        });
 
         if (recipients.length === 0) {
             return NextResponse.json(
@@ -278,17 +344,14 @@ export async function POST(request: NextRequest) {
             }
         }
 
-        // Render template once with Mailgun recipient-variable placeholders.
-        // Mailgun substitutes %recipient.X% per delivery, so each recipient
-        // sees their own personalized content with a single render + API call.
         const templateProps: Record<string, string | boolean | undefined> = {
-            firstName: "%recipient.firstName%",
+            firstName: PLACEHOLDERS.firstName,
             ...(isConfirmAttendance && {
-                yesConfirmationUrl: "%recipient.yesUrl%",
-                noConfirmationUrl: "%recipient.noUrl%",
+                yesConfirmationUrl: PLACEHOLDERS.yesUrl,
+                noConfirmationUrl: PLACEHOLDERS.noUrl,
             }),
             ...(isJudgePortalLink && {
-                portalUrl: "%recipient.portalUrl%",
+                portalUrl: PLACEHOLDERS.portalUrl,
             }),
         };
 
@@ -304,89 +367,153 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Build per-recipient variable map for Mailgun substitution
-        const recipientVariables: Record<string, Record<string, string>> = {};
+        const knownTokens = new Set(Object.values(PLACEHOLDERS));
+        const mangledTokens = Array.from(
+            new Set(
+                [...html.matchAll(ANY_PLACEHOLDER_PATTERN), ...text.matchAll(ANY_PLACEHOLDER_PATTERN)]
+                    .map((match) => match[0])
+                    .filter((token) => !knownTokens.has(token)),
+            ),
+        );
+        if (mangledTokens.length > 0) {
+            console.error("Template rendered with altered placeholders:", {
+                templateId,
+                mangledTokens,
+            });
+            return NextResponse.json(
+                { error: "Failed to personalize email template" },
+                { status: 500 },
+            );
+        }
+
+        const judgingPortalUrl =
+            process.env.NEXT_PUBLIC_JUDGING_PORTAL_URL ||
+            "https://dashboard.revolutionuc.com/judgingportal";
+        const recipientVariables: Record<string, RecipientVars> = {};
         for (const email of recipients) {
             const participant = participantMap.get(email);
-            const vars: Record<string, string> = {
-                firstName: participant?.firstName ?? "Hacker",
+            const vars: RecipientVars = {
+                firstName: participant?.firstName?.trim() || "Hacker",
             };
-            if (isConfirmAttendance && participant) {
-                const confirmToken = tokenMap.get(participant.userId);
+            if (isConfirmAttendance) {
+                const confirmToken = participant
+                    ? tokenMap.get(participant.userId)
+                    : undefined;
                 if (confirmToken) {
                     vars.yesUrl = `${baseUrl}/confirm?token=${confirmToken}&response=yes`;
                     vars.noUrl = `${baseUrl}/confirm?token=${confirmToken}&response=no`;
                 } else {
-                    // Fallback if token generation failed for this participant
                     vars.yesUrl = `${baseUrl}/confirm?response=yes`;
                     vars.noUrl = `${baseUrl}/confirm?response=no`;
                 }
             }
-            if (isJudgePortalLink && participant?.userId) {
-                const judgingPortalUrl = process.env.NEXT_PUBLIC_JUDGING_PORTAL_URL || "https://dashboard.revolutionuc.com/judgingportal";
-                vars.portalUrl = `${judgingPortalUrl}/${participant.userId}`;
+            if (isJudgePortalLink) {
+                vars.portalUrl = participant?.userId
+                    ? `${judgingPortalUrl}/${participant.userId}`
+                    : judgingPortalUrl;
             }
             recipientVariables[email] = vars;
         }
 
-        // Initialize Mailgun
-        const mailgun = new Mailgun(formData);
-        const mg = mailgun.client({
-            username: "api",
-            key: process.env.MAILGUN_API_KEY,
-        });
-
-        const mailgunDomain = process.env.MAILGUN_DOMAIN;
-        const fromEmail =
-            process.env.MAILGUN_FROM_EMAIL || "info@revolutionuc.com";
-
-        // Send in batches of 1000 (Mailgun's limit)
-        const BATCH_SIZE = 1000;
-        const results = [];
+        const fromEmail = getFromAddress();
+        const sendId = randomUUID();
+        const results: {
+            batch: number;
+            count: number;
+            sentCount: number;
+            success: boolean;
+            messageIds?: string[];
+            error?: string;
+        }[] = [];
+        const failedRecipients: { email: string; error: string }[] = [];
 
         for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
+            const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
             const batch = recipients.slice(i, i + BATCH_SIZE);
-            const batchVars = Object.fromEntries(
-                batch.map((email) => [
-                    email,
-                    recipientVariables[email] ?? { firstName: "Hacker" },
-                ]),
-            );
 
-            try {
-                const response = await mg.messages.create(mailgunDomain, {
+            const emails = batch.map((email) => {
+                const vars = recipientVariables[email] ?? { firstName: "Hacker" };
+                return {
                     from: fromEmail,
-                    to: batch,
+                    to: [email],
                     subject: emailSubject,
-                    html: html,
-                    text: text,
-                    "recipient-variables": JSON.stringify(batchVars),
-                });
+                    html: fillPlaceholders(html, vars, true),
+                    text: fillPlaceholders(text, vars, false),
+                };
+            });
 
+            let messageIds: string[] | undefined;
+            let rejected: { email: string; error: string }[] = [];
+            let errorMessage: string | undefined;
+
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    const { data, error } = await resend.batch.send(emails, {
+                        idempotencyKey: `${sendId}-${batchNumber}`,
+                        batchValidation: "permissive",
+                    });
+
+                    if (!error) {
+                        messageIds = data.data.map((entry) => entry.id);
+                        rejected = (data.errors ?? []).map((entry) => ({
+                            email: batch[entry.index] ?? `(batch index ${entry.index})`,
+                            error: entry.message,
+                        }));
+                        errorMessage = undefined;
+                        break;
+                    }
+
+                    errorMessage = `${error.name}: ${error.message}`;
+                    if (
+                        error.name === "rate_limit_exceeded" &&
+                        attempt < MAX_RATE_LIMIT_RETRIES
+                    ) {
+                        await sleep(1000 * (attempt + 1));
+                        continue;
+                    }
+                } catch (error) {
+                    errorMessage =
+                        error instanceof Error ? error.message : "Unknown error";
+                }
+                break;
+            }
+
+            if (messageIds) {
+                const sentCount = batch.length - rejected.length;
+                if (rejected.length > 0) {
+                    console.error(
+                        `Batch ${batchNumber}: ${rejected.length} email(s) rejected:`,
+                        rejected,
+                    );
+                    failedRecipients.push(...rejected);
+                }
                 console.log(
-                    `Batch ${Math.floor(i / BATCH_SIZE) + 1} sent (${batch.length} recipients):`,
-                    response.id,
+                    `Batch ${batchNumber} sent (${sentCount}/${batch.length} recipients)`,
                 );
                 results.push({
-                    batch: Math.floor(i / BATCH_SIZE) + 1,
+                    batch: batchNumber,
                     count: batch.length,
-                    success: true,
-                    messageId: response.id,
+                    sentCount,
+                    success: rejected.length === 0,
+                    messageIds,
                 });
-            } catch (error) {
-                console.error(
-                    `Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`,
-                    error,
+            } else {
+                const batchError = errorMessage ?? "Unknown error";
+                console.error(`Batch ${batchNumber} failed:`, batchError);
+                failedRecipients.push(
+                    ...batch.map((email) => ({ email, error: batchError })),
                 );
                 results.push({
-                    batch: Math.floor(i / BATCH_SIZE) + 1,
+                    batch: batchNumber,
                     count: batch.length,
+                    sentCount: 0,
                     success: false,
-                    error:
-                        error instanceof Error
-                            ? error.message
-                            : "Unknown error",
+                    error: batchError,
                 });
+            }
+
+            if (i + BATCH_SIZE < recipients.length) {
+                await sleep(BATCH_DELAY_MS);
             }
         }
 
@@ -399,16 +526,20 @@ export async function POST(request: NextRequest) {
             results,
         });
 
-        const successCount = results.filter((r) => r.success).length;
-        const failedCount = results.length - successCount;
+        const failedCount = failedRecipients.length;
+        const successCount = recipients.length - failedCount;
 
         return NextResponse.json({
             success: failedCount === 0,
-            message: `Sent to ${recipients.length} recipient(s)`,
+            message:
+                failedCount === 0
+                    ? `Sent to ${recipients.length} recipient(s)`
+                    : `Sent to ${successCount} of ${recipients.length} recipient(s); ${failedCount} failed`,
             results,
             recipientCount: recipients.length,
             successCount,
             failedCount,
+            failedRecipients,
         });
     } catch (error) {
         console.error("Error sending emails:", error);
