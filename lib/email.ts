@@ -1,17 +1,4 @@
-import Mailgun from "mailgun.js";
-
-// Initialize Mailgun client
-const mailgun = new Mailgun(FormData);
-
-const mg = process.env.MAILGUN_API_KEY
-  ? mailgun.client({
-      username: "api",
-      key: process.env.MAILGUN_API_KEY,
-    })
-  : null;
-
-const MAILGUN_DOMAIN = process.env.MAILGUN_DOMAIN || "revolutionuc.com";
-const FROM_EMAIL = process.env.MAILGUN_FROM_EMAIL || "RevolutionUC <info@revolutionuc.com>";
+import { getFromAddress, getResend } from "@/lib/resend";
 
 interface EmailOptions {
   to: string;
@@ -21,26 +8,33 @@ interface EmailOptions {
 }
 
 /**
- * Send an email using Mailgun
+ * Send an email using Resend
  */
 async function sendEmail(
   options: EmailOptions,
 ): Promise<{ success: boolean; error?: string }> {
-  if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+  const resend = getResend();
+  if (!resend) {
     console.error(
-      "Mailgun configuration missing. Set MAILGUN_API_KEY and MAILGUN_DOMAIN environment variables.",
+      "Resend configuration missing. Set the RESEND_API_KEY environment variable.",
     );
     return { success: false, error: "Email service not configured" };
   }
 
   try {
-    await mg.messages.create(MAILGUN_DOMAIN, {
-      from: FROM_EMAIL,
+    // The Resend SDK returns API errors instead of throwing them
+    const { error } = await resend.emails.send({
+      from: getFromAddress(),
       to: [options.to],
       subject: options.subject,
       text: options.text,
       html: options.html,
     });
+
+    if (error) {
+      console.error(`Failed to send email to ${options.to}:`, error);
+      return { success: false, error: error.message };
+    }
 
     console.log(`Email sent successfully to ${options.to}`);
     return { success: true };
