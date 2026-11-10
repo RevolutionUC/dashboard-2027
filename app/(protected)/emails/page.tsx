@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Eye, Send } from "lucide-react";
+import { Check, Copy, Eye, Send } from "lucide-react";
 import { emailTemplates } from "@/lib/templates";
 import { render } from "@react-email/render";
 import { PARTICIPANT_STATUSES } from "@/lib/participant-status";
@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/dialog";
 
 type RecipientType = "all" | "status" | "specific" | "specific-judges" | "judges";
+
+type FailedRecipient = { email: string; error: string };
 
 function EmailPreviewTab() {
   const [selectedTemplateId, setSelectedTemplateId] = useState(
@@ -132,7 +134,19 @@ function SendEmailsTab() {
   const [statusMessage, setStatusMessage] = useState<{
     type: "success" | "error";
     text: string;
+    failedRecipients?: FailedRecipient[];
   } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const copyFailedEmails = async (failed: FailedRecipient[]) => {
+    try {
+      await navigator.clipboard.writeText(failed.map((r) => r.email).join(", "));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   const handleSendEmails = async () => {
     if (!selectedTemplateId) {
@@ -171,6 +185,7 @@ function SendEmailsTab() {
     setShowConfirmDialog(false);
     setIsSending(true);
     setStatusMessage(null);
+    setCopied(false);
 
     try {
       const response = await fetch("/api/emails/send", {
@@ -192,12 +207,21 @@ function SendEmailsTab() {
 
       if (response.ok) {
         const data = await response.json();
-        setStatusMessage({
-          type: "success",
-          text: data.message || "Emails sent successfully!",
-        });
-        if (recipientType === "specific") {
-          setSpecificEmails("");
+        const failedRecipients: FailedRecipient[] = data.failedRecipients ?? [];
+        if (data.success === false || failedRecipients.length > 0) {
+          setStatusMessage({
+            type: "error",
+            text: data.message || "Some emails failed to send.",
+            failedRecipients,
+          });
+        } else {
+          setStatusMessage({
+            type: "success",
+            text: data.message || "Emails sent successfully!",
+          });
+          if (recipientType === "specific") {
+            setSpecificEmails("");
+          }
         }
       } else {
         const data = await response.json();
@@ -356,7 +380,40 @@ function SendEmailsTab() {
               : "bg-destructive/10 text-destructive border border-destructive/20"
           }`}
         >
-          {statusMessage.text}
+          <p>{statusMessage.text}</p>
+          {statusMessage.failedRecipients &&
+            statusMessage.failedRecipients.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium">
+                    Failed recipients ({statusMessage.failedRecipients.length})
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      copyFailedEmails(statusMessage.failedRecipients ?? [])
+                    }
+                  >
+                    {copied ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    {copied ? "Copied" : "Copy emails"}
+                  </Button>
+                </div>
+                <ul className="max-h-48 overflow-y-auto rounded-md border border-destructive/20 bg-background/50 p-2 text-sm">
+                  {statusMessage.failedRecipients.map((r, i) => (
+                    <li key={`${r.email}-${i}`} className="break-all py-0.5">
+                      <span className="font-medium">{r.email}</span>
+                      <span className="text-muted-foreground"> — {r.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
         </div>
       )}
 
