@@ -1,39 +1,36 @@
-import { getSessionCookie } from "better-auth/cookies";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { updateSession } from "@/lib/supabase/proxy";
 
 // Routes that don't require authentication at all
-const publicRoutes = ["/sign-in", "/sign-up", "/error", '/judgingportal'];
-
-// API routes that should be accessible without auth
-const publicApiRoutes = ["/api/auth"];
+const publicRoutes = ["/sign-in", "/sign-up", "/error", "/judgingportal", "/auth"];
 
 // Routes accessible to authenticated but not-yet-approved users
 const pendingRoutes = ["/pending-approval"];
 
-export function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Refresh the Supabase session cookies on every request
+  const { response, user } = await updateSession(request);
+
+  // Signed-in users don't need the sign-in / sign-up pages
+  if (user && (pathname.startsWith("/sign-in") || pathname.startsWith("/sign-up"))) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
 
   // Allow public routes
   if (publicRoutes.some((route) => pathname.startsWith(route))) {
-    return NextResponse.next();
-  }
-
-  // Allow auth API routes
-  if (publicApiRoutes.some((route) => pathname.startsWith(route))) {
-    return NextResponse.next();
+    return response;
   }
 
   // Allow pending-approval route (authenticated users who aren't approved yet)
   if (pendingRoutes.some((route) => pathname.startsWith(route))) {
-    return NextResponse.next();
+    return response;
   }
 
-  // Check for session using Better Auth's cookie helper
-  const sessionCookie = getSessionCookie(request);
-
-  // If no session, redirect to sign-in
-  if (!sessionCookie) {
+  // If no Supabase user, redirect to sign-in
+  if (!user) {
     const signInUrl = new URL("/sign-in", request.url);
     signInUrl.searchParams.set("callbackUrl", pathname);
     return NextResponse.redirect(signInUrl);
@@ -42,7 +39,7 @@ export function proxy(request: NextRequest) {
   // Session exists - let the request through.
   // Approval status is checked server-side in the (protected) layout
   // because middleware can't do DB queries on the Edge.
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
