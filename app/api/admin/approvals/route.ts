@@ -1,10 +1,12 @@
-import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { accessRequests, user as userTable } from "@/lib/db/schema";
+import { db, must, now } from "@/lib/db";
+import { ACCESS_REQUEST_COLUMNS } from "@/lib/db/columns";
+import { APP_ROLES, type AppRole } from "@/lib/auth";
 import { sendApprovalEmail, sendDenialEmail } from "@/lib/email";
 import { logAction } from "@/lib/audit";
 import { withAdminSession } from "@/lib/api/admin-auth";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // GET /api/admin/approvals - List access requests
 export async function GET(request: Request) {
@@ -12,36 +14,16 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const statusFilter = searchParams.get("status");
 
-    let query = db
-      .select({
-        id: accessRequests.id,
-        userId: accessRequests.userId,
-        email: accessRequests.email,
-        name: accessRequests.name,
-        image: accessRequests.image,
-        status: accessRequests.status,
-        role: accessRequests.role,
-        requestedAt: accessRequests.requestedAt,
-        reviewedAt: accessRequests.reviewedAt,
-        reviewedBy: accessRequests.reviewedBy,
-      })
-      .from(accessRequests)
-      .orderBy(accessRequests.requestedAt)
-      .$dynamic();
+    let query = db.from("access_requests").select(ACCESS_REQUEST_COLUMNS);
 
     if (
       statusFilter &&
       ["pending", "approved", "denied"].includes(statusFilter)
     ) {
-      query = query.where(
-        eq(
-          accessRequests.status,
-          statusFilter as "pending" | "approved" | "denied",
-        ),
-      );
+      query = query.eq("status", statusFilter as "pending" | "approved" | "denied");
     }
 
-    const requests = await query;
+    const requests = must(await query.order("requested_at", { ascending: true }));
     return NextResponse.json(requests);
   });
 }
@@ -67,54 +49,66 @@ export async function PATCH(request: Request) {
     }
 
     // Validate role if approving
-    const validRoles = ["lead", "organizer", "admin"];
-    if (action === "approve" && role && !validRoles.includes(role)) {
+    if (action === "approve" && role && !(APP_ROLES as readonly string[]).includes(role)) {
       return NextResponse.json(
         { error: "Invalid role. Must be lead, organizer, or admin." },
         { status: 400 },
       );
     }
 
-    const assignedRole = action === "approve" ? (role || "lead") : undefined;
+    const assignedRole: AppRole | undefined = action === "approve" ? ((role as AppRole) || "lead") : undefined;
 
     // Get the access request
-    const [existingRequest] = await db
-      .select()
-      .from(accessRequests)
-      .where(eq(accessRequests.id, requestId))
-      .limit(1);
+    const existingRequest = must(
+      await db.from("access_requests").select(ACCESS_REQUEST_COLUMNS).eq("id", requestId).maybeSingle(),
+    );
 
     if (!existingRequest) {
       return NextResponse.json({ error: "Request not found" }, { status: 404 });
     }
 
+    if (action !== "approve" && existingRequest.userId === session.user.id) {
+      return NextResponse.json({ error: "You can't deny or revoke your own access." }, { status: 400 });
+    }
+
+    // Roles live in Supabase RBAC (public.user_roles), keyed by the Supabase auth user id.
+    if (!UUID_RE.test(existingRequest.userId)) {
+      return NextResponse.json(
+        { error: "This account predates Supabase Auth. Ask the user to sign up again." },
+        { status: 400 },
+      );
+    }
+
+    if (assignedRole) {
+      must(
+        await db
+          .from("user_roles")
+          .upsert(
+            { user_id: existingRequest.userId, role: assignedRole, updated_at: now() },
+            { onConflict: "user_id" },
+          ),
+      );
+    } else {
+      // Deny and revoke both remove the role.
+      must(await db.from("user_roles").delete().eq("user_id", existingRequest.userId));
+    }
+
     const newStatus = action === "approve" ? "approved" : "denied";
 
     // Update the access request
-    await db
-      .update(accessRequests)
-      .set({
-        status: newStatus,
-        ...(assignedRole && { role: assignedRole }),
-        reviewedAt: new Date(),
-        reviewedBy: session.user.id,
-      })
-      .where(eq(accessRequests.id, requestId));
-
-    // If approved, update the user role and dashboard role
-    if (action === "approve") {
-      const updateData: { banned: false; dashboardRole: string; role?: string } = {
-        banned: false,
-        dashboardRole: assignedRole!,
-      };
-      if (assignedRole === "admin") {
-        updateData.role = "admin";
-      }
+    must(
       await db
-        .update(userTable)
-        .set(updateData)
-        .where(eq(userTable.id, existingRequest.userId));
+        .from("access_requests")
+        .update({
+          status: newStatus,
+          ...(assignedRole && { role: assignedRole }),
+          reviewed_at: now(),
+          reviewed_by: session.user.id,
+        })
+        .eq("id", requestId),
+    );
 
+    if (action === "approve") {
       await logAction({
         userId: session.user.id,
         name: session.user.name,
@@ -127,12 +121,6 @@ export async function PATCH(request: Request) {
         },
       });
     } else if (action === "revoke") {
-      // Revoke: clear dashboard role and ban the user
-      await db
-        .update(userTable)
-        .set({ dashboardRole: null, banned: true, banReason: "Access revoked by admin" })
-        .where(eq(userTable.id, existingRequest.userId));
-
       await logAction({
         userId: session.user.id,
         name: session.user.name,

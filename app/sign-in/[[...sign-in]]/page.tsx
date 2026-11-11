@@ -1,71 +1,43 @@
 "use client";
 
-import { authClient } from "@/lib/auth-client";
-import { useState, useEffect } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
+import { signInWithPassword } from "@/app/auth/actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
-export default function SignInPage() {
+function SignInForm() {
   const [isLoading, setIsLoading] = useState(false);
-  const [isChecking, setIsChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
-  // Check if user is already authenticated
-  useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const session = await authClient.getSession();
-        if (session?.data?.user) {
-          // User is already signed in, redirect to callback URL
-          router.push(callbackUrl);
-          return;
-        }
-      } catch {
-        // Not authenticated, continue to sign-in page
-      } finally {
-        setIsChecking(false);
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setIsLoading(true);
+    setError(null);
+
+    const formData = new FormData(event.currentTarget);
+    formData.set("callbackUrl", callbackUrl);
+
+    try {
+      const result = await signInWithPassword(formData);
+      if (result.error) {
+        setError(result.error);
+        setIsLoading(false);
+        return;
       }
-    };
-    checkSession();
-  }, [callbackUrl, router]);
-
-  const handleGitHubSignIn = async () => {
-    setIsLoading(true);
-    try {
-      await authClient.signIn.social({
-        provider: "github",
-        callbackURL: callbackUrl,
-        errorCallbackURL: "/error",
-      });
-    } catch (error) {
-      console.error("Sign in failed:", error);
+      router.push(result.redirectTo ?? "/dashboard");
+      router.refresh();
+    } catch (err) {
+      console.error("Sign in failed:", err);
+      setError("Sign in failed. Please try again.");
       setIsLoading(false);
     }
   };
-
-  const handleGoogleSignIn = async () => {
-    setIsLoading(true);
-    try {
-      await authClient.signIn.social({
-        provider: "google",
-        callbackURL: callbackUrl,
-        errorCallbackURL: "/error",
-      });
-    } catch (error) {
-      console.error("Sign in failed:", error);
-      setIsLoading(false);
-    }
-  };
-
-
-  if (isChecking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -75,34 +47,38 @@ export default function SignInPage() {
           <p className="mt-2 text-muted-foreground">Sign in to your account to continue</p>
         </div>
 
-        <div className="space-y-4">
-          <button
-        type="button"
-        onClick={handleGoogleSignIn}
-        disabled={isLoading}
-        className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 text-gray-800 border border-gray-300 rounded-lg font-medium text-sm h-12 px-4 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-        <svg
-          className="h-5 w-5"
-          viewBox="0 0 48 48"
-          aria-hidden="true"
-        >
-          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.25 5.48-4.76 7.18l7.73 6C44.42 38.03 46.98 31.88 46.98 24.55z" />
-          <path fill="#FBBC05" d="M10.53 28.59A14.41 14.41 0 019.75 24c0-1.59.27-3.13.76-4.59l-7.98-6.2A23.91 23.91 0 000 24c0 3.87.93 7.53 2.56 10.78l7.97-6.19z" />
-          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.91-5.8l-7.73-6c-2.15 1.45-4.92 2.3-8.18 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-        </svg>
-        {isLoading ? "Signing in..." : "Continue with Google"}
-      </button>
-        </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input id="email" name="email" type="email" autoComplete="email" required />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="password">Password</Label>
+            <Input id="password" name="password" type="password" autoComplete="current-password" required />
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button type="submit" className="w-full h-11" disabled={isLoading}>
+            {isLoading ? "Signing in..." : "Sign in"}
+          </Button>
+        </form>
 
         <p className="text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
-          <a href="/sign-up" className="font-medium text-primary hover:underline">
-            Sign up
-          </a>
+          <Link href="/sign-up" className="font-medium text-foreground underline-offset-4 hover:underline">
+            Request access
+          </Link>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense>
+      <SignInForm />
+    </Suspense>
   );
 }

@@ -1,55 +1,33 @@
-import { eq } from "drizzle-orm";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { user as userTable } from "@/lib/db/schema";
+import { type AppRole, getAccessInfo } from "@/lib/auth";
 
 interface DashboardAccessInfo {
   userId: string;
   userName: string | null;
   userEmail: string | null;
   userImage: string | null;
-  authRole?: string;
-  dashboardRole?: string;
+  /** From the verified Supabase `user_role` JWT claim. null = not approved. */
+  dashboardRole: AppRole | null;
   isAdmin: boolean;
+  isApproved: boolean;
 }
 
+/** Access info for server components. Redirects to /sign-in when not signed in. */
 export async function getDashboardAccessInfo(): Promise<DashboardAccessInfo> {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const access = await getAccessInfo();
 
-  if (!session?.user) {
+  if (!access) {
     redirect("/sign-in");
   }
 
-  const authRole = (session.user as { role?: string }).role;
-  if (authRole === "admin") {
-    return {
-      userId: session.user.id,
-      userName: session.user.name ?? null,
-      userEmail: session.user.email ?? null,
-      userImage: session.user.image ?? null,
-      authRole,
-      dashboardRole: "admin",
-      isAdmin: true,
-    };
-  }
-
-  const [userData] = await db
-    .select({ dashboardRole: userTable.dashboardRole })
-    .from(userTable)
-    .where(eq(userTable.id, session.user.id))
-    .limit(1);
-
+  const { user } = access.session;
   return {
-    userId: session.user.id,
-    userName: session.user.name ?? null,
-    userEmail: session.user.email ?? null,
-    userImage: session.user.image ?? null,
-    authRole,
-    dashboardRole: userData?.dashboardRole ?? undefined,
-    isAdmin: userData?.dashboardRole === "admin",
+    userId: user.id,
+    userName: user.name ?? null,
+    userEmail: user.email ?? null,
+    userImage: user.image ?? null,
+    dashboardRole: access.dashboardRole,
+    isAdmin: access.isAdmin,
+    isApproved: access.isApproved,
   };
 }
