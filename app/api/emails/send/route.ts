@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionWithRole } from "@/lib/auth";
+import { getAccessInfo } from "@/lib/auth";
 import {
     getTemplateById,
     renderTemplateToHtml,
@@ -7,9 +7,8 @@ import {
 } from "@/lib/templates";
 import formData from "form-data";
 import Mailgun from "mailgun.js";
-import { db } from "@/lib/db";
-import { accessRequests, confirmTokens, participants, judges } from "@/lib/db/schema";
-import { eq, inArray, isNull, and } from "drizzle-orm";
+import { chunk, db, fetchAll, must, now } from "@/lib/db";
+import type { Enums } from "@/lib/db/types";
 import { randomBytes } from "crypto";
 
 type RecipientType = "all" | "status" | "specific" | "specific-judges" | "judges";
@@ -27,7 +26,7 @@ const JUDGE_PORTAL_LINK_ID = "judge-portal-link";
 
 export async function POST(request: NextRequest) {
     try {
-        const sessionInfo = await getSessionWithRole();
+        const sessionInfo = await getAccessInfo();
 
         if (!sessionInfo) {
             return NextResponse.json(
@@ -36,7 +35,7 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        const { session, dashboardRole } = sessionInfo;
+        const { dashboardRole } = sessionInfo;
 
         // Block organizers from sending emails
         if (dashboardRole === "organizer") {
@@ -46,16 +45,8 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (dashboardRole !== "admin") {
-            const [request] = await db
-                .select({ status: accessRequests.status })
-                .from(accessRequests)
-                .where(eq(accessRequests.userId, session.user.id))
-                .limit(1);
-
-            if (!request || request.status !== "approved") {
-                return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-            }
+        if (!sessionInfo.isApproved) {
+            return NextResponse.json({ error: "Forbidden" }, { status: 403 });
         }
 
         const {
@@ -111,37 +102,49 @@ export async function POST(request: NextRequest) {
         const participantMap = new Map<string, { firstName: string; userId: string }>();
 
         try {
+            const PARTICIPANT_RECIPIENT_COLUMNS = "email,firstName:first_name,userId:user_id";
+            const JUDGE_RECIPIENT_COLUMNS = "email,name,id";
+
             if (recipientType === "all") {
-                const allParticipants = await db
-                    .select({ email: participants.email, firstName: participants.firstName, userId: participants.user_id })
-                    .from(participants);
+                const allParticipants = await fetchAll(() =>
+                    db.from("participants").select(PARTICIPANT_RECIPIENT_COLUMNS).order("user_id"),
+                );
                 for (const p of allParticipants) {
                     participantMap.set(p.email, { firstName: p.firstName, userId: p.userId });
                 }
                 recipients = allParticipants.map((p) => p.email);
             } else if (recipientType === "status") {
-                const statusParticipants = await db
-                    .select({ email: participants.email, firstName: participants.firstName, userId: participants.user_id })
-                    .from(participants)
-                    .where(eq(participants.status, status as any));
+                const statusParticipants = await fetchAll(() =>
+                    db
+                        .from("participants")
+                        .select(PARTICIPANT_RECIPIENT_COLUMNS)
+                        .eq("status", status as Enums<"participant_status">)
+                        .order("user_id"),
+                );
                 for (const p of statusParticipants) {
                     participantMap.set(p.email, { firstName: p.firstName, userId: p.userId });
                 }
                 recipients = statusParticipants.map((p) => p.email);
             } else if (recipientType === "specific") {
-                const knownParticipants = await db
-                    .select({ email: participants.email, firstName: participants.firstName, userId: participants.user_id })
-                    .from(participants)
-                    .where(inArray(participants.email, specificEmails ?? []));
+                const knownParticipants = (
+                    await Promise.all(
+                        chunk(specificEmails ?? []).map(async (emails) =>
+                            must(await db.from("participants").select(PARTICIPANT_RECIPIENT_COLUMNS).in("email", emails)),
+                        ),
+                    )
+                ).flat();
                 for (const p of knownParticipants) {
                     participantMap.set(p.email, { firstName: p.firstName, userId: p.userId });
                 }
                 recipients = specificEmails || [];
             } else if (recipientType === "specific-judges") {
-                const knownJudges = await db
-                    .select({ email: judges.email, name: judges.name, id: judges.id })
-                    .from(judges)
-                    .where(inArray(judges.email, specificEmails ?? []));
+                const knownJudges = (
+                    await Promise.all(
+                        chunk(specificEmails ?? []).map(async (emails) =>
+                            must(await db.from("judges").select(JUDGE_RECIPIENT_COLUMNS).in("email", emails)),
+                        ),
+                    )
+                ).flat();
                 for (const j of knownJudges) {
                     participantMap.set(j.email, { firstName: j.name, userId: j.id });
                 }
@@ -158,9 +161,9 @@ export async function POST(request: NextRequest) {
                     );
                 }
             } else if (recipientType === "judges") {
-                const allJudges = await db
-                    .select({ email: judges.email, name: judges.name, id: judges.id })
-                    .from(judges);
+                const allJudges = await fetchAll(() =>
+                    db.from("judges").select(JUDGE_RECIPIENT_COLUMNS).order("id"),
+                );
                 for (const j of allJudges) {
                     participantMap.set(j.email, { firstName: j.name, userId: j.id });
                 }
@@ -241,36 +244,43 @@ export async function POST(request: NextRequest) {
 
             if (participantIds.length > 0) {
                 // Invalidate existing unused tokens for these participants
-                await db
-                    .update(confirmTokens)
-                    .set({ usedAt: new Date() })
-                    .where(
-                        and(
-                            inArray(confirmTokens.participantId, participantIds),
-                            isNull(confirmTokens.usedAt),
-                        ),
+                const usedAt = now();
+                for (const ids of chunk(participantIds)) {
+                    must(
+                        await db
+                            .from("confirm_tokens")
+                            .update({ used_at: usedAt })
+                            .in("participant_id", ids)
+                            .is("used_at", null),
                     );
+                }
 
                 // Generate and insert new tokens
-                const expiresAt = new Date();
-                expiresAt.setDate(expiresAt.getDate() + 7);
+                const expiresAtDate = new Date();
+                expiresAtDate.setDate(expiresAtDate.getDate() + 7);
+                const expiresAt = expiresAtDate.toISOString();
 
                 const newTokens = Array.from(participantMap.entries()).map(
                     ([email, p]) => ({
                         token: randomBytes(32).toString("base64url"),
-                        participantId: p.userId,
+                        participant_id: p.userId,
                         email,
-                        expiresAt,
+                        expires_at: expiresAt,
                     }),
                 );
 
-                const inserted = await db
-                    .insert(confirmTokens)
-                    .values(newTokens)
-                    .returning({
-                        token: confirmTokens.token,
-                        participantId: confirmTokens.participantId,
-                    });
+                const inserted = (
+                    await Promise.all(
+                        chunk(newTokens, 500).map(async (rows) =>
+                            must(
+                                await db
+                                    .from("confirm_tokens")
+                                    .insert(rows)
+                                    .select("token,participantId:participant_id"),
+                            ),
+                        ),
+                    )
+                ).flat();
 
                 for (const row of inserted) {
                     tokenMap.set(row.participantId, row.token);

@@ -1,24 +1,16 @@
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { getAccessInfo } from "@/lib/auth";
 
 type AdminSession = NonNullable<Awaited<ReturnType<typeof getAdminSession>>>;
 
 export async function getAdminSession() {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
-
-  if (!session?.user) {
+  // Admin = `user_role` claim from Supabase RBAC (verified JWT).
+  const access = await getAccessInfo();
+  if (!access?.isAdmin) {
     return null;
   }
 
-  const userRole = (session.user as { role?: string }).role;
-  if (userRole !== "admin") {
-    return null;
-  }
-
-  return session;
+  return access.session;
 }
 
 export async function requireAdminSession() {
@@ -33,7 +25,7 @@ export async function withAdminSession<T>(
   handler: (session: AdminSession) => Promise<T>,
 ): Promise<T | Response> {
   const auth = await requireAdminSession();
-  if ("error" in auth) {
+  if (auth.error) {
     return auth.error;
   }
   return handler(auth.session);
