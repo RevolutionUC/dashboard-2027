@@ -62,7 +62,6 @@ const items = [
     title: "Registration Stats",
     url: "/stats",
     icon: ChartColumn,
-    roles: ["admin", "lead"],
   },
   {
     title: "Emails",
