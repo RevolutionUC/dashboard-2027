@@ -51,3 +51,6 @@ next-env.d.ts
 better-auth_migrations/
 
 /fraud-report*.json
+
+# Supabase CLI
+supabase/.temp/
