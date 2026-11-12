@@ -1,7 +1,5 @@
-import { asc, eq, sql } from "drizzle-orm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { db } from "@/lib/db";
-import { evaluations, judges, projects } from "@/lib/db/schema";
+import { countRows, db, fetchAll } from "@/lib/db";
 import { ScoringsTable } from "./scorings-table";
 import type { EvaluationWithJudge, ProjectWithEvaluations } from "./types";
 
@@ -75,32 +73,23 @@ function calculateRankings(data: EvaluationWithJudge[]): RankingEntry[] {
 }
 
 export default async function ScoringsPage() {
-  const [evaluationRows, judgeCounts] = await Promise.all([
-    db
-      .select({
-        projectId: evaluations.projectId,
-        projectName: projects.name,
-        judgeId: evaluations.judgeId,
-        judgeName: judges.name,
-        scores: evaluations.scores,
-      })
-      .from(evaluations)
-      .leftJoin(projects, eq(evaluations.projectId, projects.id))
-      .leftJoin(judges, eq(evaluations.judgeId, judges.id))
-      .orderBy(asc(evaluations.judgeId)),
-    db
-      .select({
-        finalizedCount: sql<number>`count(*) filter (where ${judges.judgingPhase} = 'finalized')`,
-        totalCount: sql<number>`count(*)`,
-      })
-      .from(judges),
+  const [evaluationRows, finalizedCount, totalJudges] = await Promise.all([
+    fetchAll(() =>
+      db
+        .from("evaluations")
+        .select("projectId:project_id,judgeId:judge_id,scores,project:projects(name),judge:judges(name)")
+        .order("judge_id", { ascending: true })
+        .order("project_id"),
+    ),
+    countRows("judges", { judging_phase: "finalized" }),
+    countRows("judges"),
   ]);
 
   const data: EvaluationWithJudge[] = evaluationRows.map((row) => ({
     projectId: row.projectId,
-    projectName: row.projectName,
+    projectName: row.project?.name ?? null,
     judgeId: row.judgeId,
-    judgeName: row.judgeName,
+    judgeName: row.judge?.name ?? null,
     score1: row.scores?.[0] ?? null,
     score2: row.scores?.[1] ?? null,
     score3: row.scores?.[2] ?? null,
@@ -126,9 +115,6 @@ export default async function ScoringsPage() {
   const sortedProjects: ProjectWithEvaluations[] = Object.values(
     projectMap,
   ).sort((a, b) => a.name.localeCompare(b.name));
-
-  const finalizedCount = judgeCounts[0]?.finalizedCount ?? 0;
-  const totalJudges = judgeCounts[0]?.totalCount ?? 0;
 
   return (
     <main className="mx-auto w-full max-w-6xl p-6">

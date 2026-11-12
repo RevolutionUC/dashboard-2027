@@ -1,4 +1,3 @@
-import { eq, ne } from "drizzle-orm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
     Table,
@@ -8,8 +7,7 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { db } from "@/lib/db";
-import { categories, evaluations, projects } from "@/lib/db/schema";
+import { db, fetchAll, must } from "@/lib/db";
 import { CategoryFilter } from "./category-filter";
 
 interface ProjectScore {
@@ -28,14 +26,9 @@ export default async function CagetoryScoringsPage({
   const params = await searchParams;
   const selectedCategoryId = params.category;
 
-  const allCategories = await db
-    .select({
-      id: categories.id,
-      name: categories.name,
-    })
-    .from(categories)
-    .where(ne(categories.type, "General"))
-    .orderBy(categories.name);
+  const allCategories = must(
+    await db.from("categories").select("id,name").neq("type", "General").order("name"),
+  );
 
   let projectScores: ProjectScore[] = [];
 
@@ -44,16 +37,18 @@ export default async function CagetoryScoringsPage({
 
     if (categoryExists) {
       // Get all evaluations for projects in this category
-      const allEvals = await db
-        .select({
-          projectId: evaluations.projectId,
-          judgeId: evaluations.judgeId,
-          projectName: projects.name,
-          categoryBordaScore: evaluations.categoryBordaScore,
-        })
-        .from(evaluations)
-        .innerJoin(projects, eq(evaluations.projectId, projects.id))
-        .where(eq(evaluations.categoryId, selectedCategoryId));
+      const allEvals = (
+        await fetchAll(() =>
+          db
+            .from("evaluations")
+            .select(
+              "projectId:project_id,judgeId:judge_id,categoryBordaScore:category_borda_score,project:projects!inner(name)",
+            )
+            .eq("category_id", selectedCategoryId)
+            .order("judge_id")
+            .order("project_id"),
+        )
+      ).map(({ project, ...evaluation }) => ({ ...evaluation, projectName: project.name }));
 
       // Count assigned judges per project
       const assignedJudgeCountByProject = new Map<string, number>();

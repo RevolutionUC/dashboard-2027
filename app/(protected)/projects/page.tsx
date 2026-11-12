@@ -1,4 +1,3 @@
-import { eq } from "drizzle-orm";
 import { X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -9,8 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { db } from "@/lib/db";
-import { categories, projects, submissions } from "@/lib/db/schema";
+import { db, fetchAll } from "@/lib/db";
 import { ImportProjectsModal } from "./import-projects-modal";
 import { MassDisqualifyModal } from "./mass-disqualify-modal";
 
@@ -26,41 +24,21 @@ interface ProjectWithCategories {
 }
 
 export default async function ProjectsPage() {
-  const projectRows = await db
-    .select({
-      id: projects.id,
-      name: projects.name,
-      status: projects.status,
-      url: projects.url,
-      location: projects.location,
-      location2: projects.location2,
-      disqualifyReason: projects.disqualifyReason,
-      categoryId: submissions.categoryId,
-    })
-    .from(projects)
-    .leftJoin(submissions, eq(projects.id, submissions.projectId))
-    .orderBy(projects.name);
-
-  // Group by project
-  const projectsMap = projectRows.reduce(
-    (acc, row) => {
-      if (!acc[row.id]) {
-        acc[row.id] = {
-          ...row,
-          categories: row.categoryId ? [row.categoryId] : [],
-        };
-      } else if (row.categoryId) {
-        acc[row.id].categories.push(row.categoryId);
-      }
-      return acc;
-    },
-    {} as Record<
-      string,
-      Omit<ProjectWithCategories, "categoryId"> & { categories: string[] }
-    >,
+  const projectRows = await fetchAll(() =>
+    db
+      .from("projects")
+      .select(
+        "id,name,status,url,location,location2,disqualifyReason:disqualify_reason,submissions(categoryId:category_id)",
+      )
+      .order("name")
+      .order("id"),
   );
 
-  const allProjects = Object.values(projectsMap);
+  const allProjects: Array<Omit<ProjectWithCategories, "categoryId"> & { categories: string[] }> =
+    projectRows.map(({ submissions, ...project }) => ({
+      ...project,
+      categories: submissions.map((s) => s.categoryId),
+    }));
 
   return (
     <main className="mx-auto w-full max-w-6xl p-6">
