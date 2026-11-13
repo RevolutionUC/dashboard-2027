@@ -6,9 +6,8 @@ import {
     renderTemplateToText,
 } from "@/lib/templates";
 import { getFromAddress, getResend, sendBatchWithRetry } from "@/lib/resend";
-import { db } from "@/lib/db";
-import { accessRequests, confirmTokens, participants, judges } from "@/lib/db/schema";
-import { eq, inArray, isNull, and, notInArray } from "drizzle-orm";
+import { chunk, db, fetchAll, must, now } from "@/lib/db";
+import type { Enums } from "@/lib/db/types";
 import { randomBytes, randomUUID } from "crypto";
 
 // Batch sends take several Resend calls; allow up to 60s on serverless hosts.
@@ -105,22 +104,26 @@ async function retireOldConfirmTokens(
     newTokenByParticipant: Map<string, string>,
 ): Promise<void> {
     if (participantIds.length === 0) return;
-    const keepTokens = participantIds
-        .map((id) => newTokenByParticipant.get(id))
-        .filter((token): token is string => !!token);
-    try {
-        await db
-            .update(confirmTokens)
-            .set({ usedAt: new Date() })
-            .where(
-                and(
-                    inArray(confirmTokens.participantId, participantIds),
-                    isNull(confirmTokens.usedAt),
-                    notInArray(confirmTokens.token, keepTokens),
-                ),
-            );
-    } catch (error) {
-        console.error("Failed to retire old confirm tokens:", { participantIds, error });
+    const usedAt = now();
+    // Filters go in the URL, so keep each request's ID + token lists small.
+    for (const ids of chunk(participantIds, 50)) {
+        const keepTokens = ids
+            .map((id) => newTokenByParticipant.get(id))
+            .filter((token): token is string => !!token);
+        try {
+            let query = db
+                .from("confirm_tokens")
+                .update({ used_at: usedAt })
+                .in("participant_id", ids)
+                .is("used_at", null);
+            if (keepTokens.length > 0) {
+                // Tokens are base64url, so they need no quoting inside the list.
+                query = query.not("token", "in", `(${keepTokens.join(",")})`);
+            }
+            must(await query);
+        } catch (error) {
+            console.error("Failed to retire old confirm tokens:", { participantIds: ids, error });
+        }
     }
 }
 
@@ -397,18 +400,20 @@ export async function POST(request: NextRequest) {
 
             const newTokens = Array.from(participantMap.entries()).map(([email, p]) => ({
                 token: randomBytes(32).toString("base64url"),
-                participantId: p.userId,
+                participant_id: p.userId,
                 email,
-                expiresAt,
+                expires_at: expiresAt.toISOString(),
             }));
 
-            const inserted = await db.insert(confirmTokens).values(newTokens).returning({
-                token: confirmTokens.token,
-                participantId: confirmTokens.participantId,
-            });
+            const inserted = must(
+                await db
+                    .from("confirm_tokens")
+                    .insert(newTokens)
+                    .select("token,participant_id"),
+            );
 
             for (const row of inserted) {
-                tokenMap.set(row.participantId, row.token);
+                tokenMap.set(row.participant_id, row.token);
             }
         }
 
