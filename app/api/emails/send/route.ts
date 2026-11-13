@@ -32,6 +32,14 @@ const BATCH_SIZE = 100;
 // Pause between batch requests to stay under Resend's per-second rate limit.
 // Retries of a failed batch are handled by sendBatchWithRetry (lib/resend.ts).
 const BATCH_DELAY_MS = 600;
+// Time budget, measured from the start of the request, so the route returns a
+// normal response before the host kills it at maxDuration:
+// no new batch starts after NEW_BATCH_CUTOFF_MS, and no Resend call (including
+// retries) runs past SEND_DEADLINE_MS, leaving a few seconds to respond.
+const NEW_BATCH_CUTOFF_MS = (maxDuration - 15) * 1000;
+const SEND_DEADLINE_MS = (maxDuration - 5) * 1000;
+// Abort a single Resend call after this long without a response.
+const ATTEMPT_TIMEOUT_MS = 15_000;
 
 type RecipientVars = {
     firstName: string;
@@ -83,6 +91,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function POST(request: NextRequest) {
+    const requestStart = Date.now();
     try {
         const sessionInfo = await getSessionWithRole();
 
@@ -433,6 +442,12 @@ export async function POST(request: NextRequest) {
             const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
             const batch = recipients.slice(i, i + BATCH_SIZE);
 
+            const elapsedMs = Date.now() - requestStart;
+            if (!stopReason && elapsedMs > NEW_BATCH_CUTOFF_MS) {
+                stopReason = `server time limit reached after ${Math.round(elapsedMs / 1000)}s; re-send to the remaining addresses`;
+                console.error(`Stopping bulk send before batch ${batchNumber}: ${stopReason}`);
+            }
+
             if (stopReason) {
                 const skipError = `Not sent: stopped after ${stopReason}`;
                 failedRecipients.push(...batch.map((email) => ({ email, error: skipError })));
@@ -457,7 +472,10 @@ export async function POST(request: NextRequest) {
                 };
             });
 
-            const outcome = await sendBatchWithRetry(resend, emails, `${sendId}-${batchNumber}`);
+            const outcome = await sendBatchWithRetry(resend, emails, `${sendId}-${batchNumber}`, {
+                attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
+                deadline: requestStart + SEND_DEADLINE_MS,
+            });
 
             if (outcome.ok) {
                 const rejected = outcome.rejected.map((entry) => ({

@@ -124,6 +124,9 @@ function EmailPreviewTab() {
   );
 }
 
+const MAY_HAVE_SENT_HINT =
+  "Some emails may already have been sent. Check the Resend dashboard before sending again.";
+
 function SendEmailsTab() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [recipientType, setRecipientType] = useState<RecipientType>("all");
@@ -205,8 +208,20 @@ function SendEmailsTab() {
         }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
+      // The body may not be JSON, e.g. the host's 504 page when the function
+      // is killed at its time limit after some batches already went out.
+      const data = await response.json().catch(() => null);
+
+      if (!data) {
+        setStatusMessage({
+          type: "error",
+          text: `${
+            response.ok
+              ? "The server sent an unreadable response"
+              : `The server stopped responding (HTTP ${response.status})`
+          }. ${MAY_HAVE_SENT_HINT}`,
+        });
+      } else if (response.ok) {
         const failedRecipients: FailedRecipient[] = data.failedRecipients ?? [];
         if (data.success === false || failedRecipients.length > 0) {
           setStatusMessage({
@@ -224,16 +239,16 @@ function SendEmailsTab() {
           }
         }
       } else {
-        const data = await response.json();
         setStatusMessage({
           type: "error",
           text: data.error || "Failed to send emails.",
         });
       }
     } catch {
+      // fetch only rejects on a network failure, which can happen mid-send
       setStatusMessage({
         type: "error",
-        text: "An error occurred while sending emails.",
+        text: `Lost connection to the server while sending. ${MAY_HAVE_SENT_HINT}`,
       });
     } finally {
       setIsSending(false);

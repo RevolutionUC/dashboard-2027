@@ -8,6 +8,10 @@ const DEFAULT_FROM_EMAIL = "RevolutionUC <info@revolutionuc.com>";
 const MAX_BATCH_RETRIES = 2;
 // Upper bound for one retry wait, including a server-provided retry-after.
 const MAX_RETRY_DELAY_MS = 5000;
+// Abort one attempt if Resend hasn't answered by then (the SDK has no timeout).
+const DEFAULT_ATTEMPT_TIMEOUT_MS = 15_000;
+// Don't start an attempt with less than this much time left before the deadline.
+const MIN_ATTEMPT_MS = 2000;
 
 // Errors that may succeed on a later attempt: rate limits, Resend 5xx, network
 // failures (the SDK reports those as application_error), and an earlier attempt
@@ -31,6 +35,13 @@ const STOP_ERRORS = new Set<string>([
 export type BatchSendOutcome =
     | { ok: true; messageIds: string[]; rejected: { index: number; message: string }[] }
     | { ok: false; error: string; stop: boolean };
+
+export interface BatchSendLimits {
+    /** Abort one attempt after this many ms without a response. */
+    attemptTimeoutMs?: number;
+    /** Epoch ms. No attempt runs past it, and no retry starts that can't finish before it. */
+    deadline?: number;
+}
 
 let client: Resend | null = null;
 
@@ -61,21 +72,36 @@ function getRetryDelayMs(attempt: number, headers: Record<string, string> | null
 
 /**
  * Send one batch (up to 100 emails) in permissive mode, retrying temporary
- * errors with the same idempotency key. `stop` is true when the error is
- * account-level (quota, API key) and later batches would fail too.
+ * errors with the same idempotency key. Each attempt is cut off after
+ * `attemptTimeoutMs`, and nothing runs past `deadline`. `stop` is true when
+ * later batches shouldn't be attempted: an account-level error (quota, API
+ * key) or no time left.
  */
 export async function sendBatchWithRetry(
     resend: Resend,
     emails: CreateBatchOptions,
     idempotencyKey: string,
+    limits: BatchSendLimits = {},
 ): Promise<BatchSendOutcome> {
+    const attemptTimeoutMs = limits.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
+    const deadline = limits.deadline ?? Number.POSITIVE_INFINITY;
+
     for (let attempt = 0; ; attempt++) {
+        const timeoutMs = Math.min(attemptTimeoutMs, deadline - Date.now());
+        if (timeoutMs < MIN_ATTEMPT_MS) {
+            return { ok: false, error: "Out of time before this batch could be sent", stop: true };
+        }
+        const signal = AbortSignal.timeout(timeoutMs);
+        // A timed-out request may still have reached Resend; retrying with the
+        // same idempotency key returns the original result instead of resending.
+        const timeoutMessage = `timeout: Resend did not respond within ${Math.round(timeoutMs / 1000)}s (this batch may still have been delivered)`;
+
         let errorMessage: string;
         let retryable = true;
         let headers: Record<string, string> | null = null;
 
         try {
-            // The SDK returns API and network errors instead of throwing them
+            // The SDK returns API and network errors (including an abort) instead of throwing them
             const {
                 data,
                 error,
@@ -83,6 +109,7 @@ export async function sendBatchWithRetry(
             } = await resend.batch.send(emails, {
                 idempotencyKey,
                 batchValidation: "permissive",
+                signal,
             });
 
             if (!error) {
@@ -96,20 +123,32 @@ export async function sendBatchWithRetry(
                 };
             }
 
-            errorMessage = `${error.name}: ${error.message}`;
-            if (STOP_ERRORS.has(error.name)) {
-                return { ok: false, error: errorMessage, stop: true };
+            if (signal.aborted) {
+                errorMessage = timeoutMessage;
+            } else {
+                errorMessage = `${error.name}: ${error.message}`;
+                if (STOP_ERRORS.has(error.name)) {
+                    return { ok: false, error: errorMessage, stop: true };
+                }
+                retryable = RETRYABLE_ERRORS.has(error.name) || (error.statusCode ?? 0) >= 500;
+                headers = responseHeaders;
             }
-            retryable = RETRYABLE_ERRORS.has(error.name) || (error.statusCode ?? 0) >= 500;
-            headers = responseHeaders;
         } catch (error) {
             // Unexpected throw; retrying is still safe thanks to the idempotency key
-            errorMessage = error instanceof Error ? error.message : "Unknown error";
+            errorMessage = signal.aborted
+                ? timeoutMessage
+                : error instanceof Error
+                  ? error.message
+                  : "Unknown error";
         }
 
         if (!retryable || attempt >= MAX_BATCH_RETRIES) {
             return { ok: false, error: errorMessage, stop: false };
         }
-        await wait(getRetryDelayMs(attempt, headers));
+        const delayMs = getRetryDelayMs(attempt, headers);
+        if (Date.now() + delayMs + MIN_ATTEMPT_MS > deadline) {
+            return { ok: false, error: `${errorMessage}; no time left to retry`, stop: true };
+        }
+        await wait(delayMs);
     }
 }
