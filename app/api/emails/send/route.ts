@@ -8,7 +8,7 @@ import {
 import { getFromAddress, getResend, sendBatchWithRetry } from "@/lib/resend";
 import { db } from "@/lib/db";
 import { accessRequests, confirmTokens, participants, judges } from "@/lib/db/schema";
-import { eq, inArray, isNull, and } from "drizzle-orm";
+import { eq, inArray, isNull, and, notInArray } from "drizzle-orm";
 import { randomBytes, randomUUID } from "crypto";
 
 // Batch sends take several Resend calls; allow up to 60s on serverless hosts.
@@ -88,6 +88,40 @@ function fillPlaceholders(
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Turn off each participant's old confirm links, keeping only the new link
+ * we just emailed them.
+ *
+ * Only call this for people whose email Resend accepted. If someone's email
+ * failed, was skipped or timed out, their old link keeps working, so they can
+ * still RSVP.
+ *
+ * Errors are logged, not thrown, because the emails have already been sent.
+ */
+async function retireOldConfirmTokens(
+    participantIds: string[],
+    newTokenByParticipant: Map<string, string>,
+): Promise<void> {
+    if (participantIds.length === 0) return;
+    const keepTokens = participantIds
+        .map((id) => newTokenByParticipant.get(id))
+        .filter((token): token is string => !!token);
+    try {
+        await db
+            .update(confirmTokens)
+            .set({ usedAt: new Date() })
+            .where(
+                and(
+                    inArray(confirmTokens.participantId, participantIds),
+                    isNull(confirmTokens.usedAt),
+                    notInArray(confirmTokens.token, keepTokens),
+                ),
+            );
+    } catch (error) {
+        console.error("Failed to retire old confirm tokens:", { participantIds, error });
+    }
 }
 
 export async function POST(request: NextRequest) {
@@ -306,52 +340,6 @@ export async function POST(request: NextRequest) {
         const isJudgePortalLink = templateId === JUDGE_PORTAL_LINK_ID;
         const baseUrl = "https://revolutionuc.com";
 
-        // Generate short-lived confirmation tokens for confirm-attendance emails
-        const tokenMap = new Map<string, string>(); // participantId → token
-        if (isConfirmAttendance) {
-            const participantIds = Array.from(participantMap.values())
-                .map((p) => p.userId)
-                .filter(Boolean);
-
-            if (participantIds.length > 0) {
-                // Invalidate existing unused tokens for these participants
-                await db
-                    .update(confirmTokens)
-                    .set({ usedAt: new Date() })
-                    .where(
-                        and(
-                            inArray(confirmTokens.participantId, participantIds),
-                            isNull(confirmTokens.usedAt),
-                        ),
-                    );
-
-                // Generate and insert new tokens
-                const expiresAt = new Date();
-                expiresAt.setDate(expiresAt.getDate() + 7);
-
-                const newTokens = Array.from(participantMap.entries()).map(
-                    ([email, p]) => ({
-                        token: randomBytes(32).toString("base64url"),
-                        participantId: p.userId,
-                        email,
-                        expiresAt,
-                    }),
-                );
-
-                const inserted = await db
-                    .insert(confirmTokens)
-                    .values(newTokens)
-                    .returning({
-                        token: confirmTokens.token,
-                        participantId: confirmTokens.participantId,
-                    });
-
-                for (const row of inserted) {
-                    tokenMap.set(row.participantId, row.token);
-                }
-            }
-        }
-
         const templateProps: Record<string, string | boolean | undefined> = {
             firstName: PLACEHOLDERS.firstName,
             ...(isConfirmAttendance && {
@@ -392,6 +380,32 @@ export async function POST(request: NextRequest) {
                 { error: "Failed to personalize email template" },
                 { status: 500 },
             );
+        }
+
+        // Create new confirm-attendance tokens only once the template has
+        // rendered, so a render failure leaves everyone's existing link alone.
+        // Old tokens are NOT retired here: that happens per batch, only for
+        // recipients whose new email Resend accepted (retireOldConfirmTokens).
+        const tokenMap = new Map<string, string>(); // participantId → new token
+        if (isConfirmAttendance && participantMap.size > 0) {
+            const expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + 7);
+
+            const newTokens = Array.from(participantMap.entries()).map(([email, p]) => ({
+                token: randomBytes(32).toString("base64url"),
+                participantId: p.userId,
+                email,
+                expiresAt,
+            }));
+
+            const inserted = await db.insert(confirmTokens).values(newTokens).returning({
+                token: confirmTokens.token,
+                participantId: confirmTokens.participantId,
+            });
+
+            for (const row of inserted) {
+                tokenMap.set(row.participantId, row.token);
+            }
         }
 
         const judgingPortalUrl =
@@ -483,6 +497,15 @@ export async function POST(request: NextRequest) {
                     error: entry.message,
                 }));
                 const sentCount = batch.length - rejected.length;
+
+                if (isConfirmAttendance) {
+                    const rejectedEmails = new Set(rejected.map((r) => r.email));
+                    const acceptedParticipantIds = batch
+                        .filter((email) => !rejectedEmails.has(email))
+                        .map((email) => participantMap.get(email)?.userId)
+                        .filter((id): id is string => !!id && tokenMap.has(id));
+                    await retireOldConfirmTokens(acceptedParticipantIds, tokenMap);
+                }
                 if (rejected.length > 0) {
                     console.error(
                         `Batch ${batchNumber}: ${rejected.length} email(s) rejected:`,
