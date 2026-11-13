@@ -1,54 +1,38 @@
-import { eq } from "drizzle-orm";
 import { notFound, redirect } from "next/navigation";
-import { db } from "@/lib/db";
-import { categories, judgeGroups, judges } from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
+
+// Judge IDs come straight from the URL, so reject anything that isn't a UUID
+// before querying (Postgres would otherwise raise an invalid-uuid error).
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function getJudgeContext(judgeID: string) {
-  const judge = await db
-    .select({
-      id: judges.id,
-      name: judges.name,
-      judgeGroupId: judges.judgeGroupId,
-      categoryId: judges.categoryId,
-      judgingPhase: judges.judgingPhase,
-    })
-    .from(judges)
-    .where(eq(judges.id, judgeID))
-    .limit(1);
-
-  if (judge.length === 0) {
+  if (!UUID_PATTERN.test(judgeID)) {
     notFound();
   }
 
-  const judgeInfo = judge[0];
+  const judge = must(
+    await db
+      .from("judges")
+      .select(
+        "id,name,judgeGroupId:judge_group_id,categoryId:category_id,judgingPhase:judging_phase,category:categories(name,type),judgeGroup:judge_groups(name)",
+      )
+      .eq("id", judgeID)
+      .maybeSingle(),
+  );
+
+  if (!judge) {
+    notFound();
+  }
+
+  const { category, judgeGroup, ...judgeInfo } = judge;
 
   if (judgeInfo.judgingPhase === "finalized") {
     redirect("/judgingportal/finished");
   }
 
-  const [categoryInfo, judgeGroupInfo] = await Promise.all([
-    db
-      .select({
-        name: categories.name,
-        type: categories.type,
-      })
-      .from(categories)
-      .where(eq(categories.id, judgeInfo.categoryId))
-      .limit(1),
-    judgeInfo.judgeGroupId
-      ? db
-          .select({
-            name: judgeGroups.name,
-          })
-          .from(judgeGroups)
-          .where(eq(judgeGroups.id, judgeInfo.judgeGroupId))
-          .limit(1)
-      : Promise.resolve([]),
-  ]);
-
-  const categoryName = categoryInfo[0]?.name ?? "Unknown";
-  const categoryType = categoryInfo[0]?.type ?? "General";
-  const judgeGroupName = judgeGroupInfo[0]?.name ?? "Unknown";
+  const categoryName = category?.name ?? "Unknown";
+  const categoryType = category?.type ?? "General";
+  const judgeGroupName = judgeGroup?.name ?? "Unknown";
   const isSponsor = categoryType === "Sponsor";
 
   return {

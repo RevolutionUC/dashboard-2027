@@ -1,28 +1,31 @@
-import { db } from "@/lib/db";
-import { participants } from "@/lib/db/schema";
-import { sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { requireAuthenticatedSession } from "@/lib/api/session-auth";
+import { db } from "@/lib/db";
+import type { Enums } from "@/lib/db/types";
+
+async function countParticipants(status?: Enums<"participant_status">) {
+  let query = db.from("participants").select("*", { count: "exact", head: true });
+  if (status) query = query.eq("status", status);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
 
 export async function GET() {
+  const auth = await requireAuthenticatedSession();
+  if (auth.error) {
+    return auth.error;
+  }
+
   try {
-    const row = await db
-      .select({
-        total: sql<number>`count(*)`,
-        confirmed: sql<number>`count(*) filter (where ${participants.status} = 'CONFIRMED')`,
-        waitlisted: sql<number>`count(*) filter (where ${participants.status} = 'WAITLISTED')`,
-        checkedIn: sql<number>`count(*) filter (where ${participants.status} = 'CHECKED_IN')`,
-      })
-      .from(participants)
-      .then((r) => r[0]);
+    const [total, confirmed, waitlisted, checkedIn] = await Promise.all([
+      countParticipants(),
+      countParticipants("CONFIRMED"),
+      countParticipants("WAITLISTED"),
+      countParticipants("CHECKED_IN"),
+    ]);
 
-    const stats = {
-      total: Number(row?.total ?? 0),
-      confirmed: Number(row?.confirmed ?? 0),
-      waitlisted: Number(row?.waitlisted ?? 0),
-      checkedIn: Number(row?.checkedIn ?? 0),
-    };
-
-    return NextResponse.json(stats);
+    return NextResponse.json({ total, confirmed, waitlisted, checkedIn });
   } catch (error) {
     console.error("Error fetching dashboard stats:", error);
     return NextResponse.json({ error: "Failed to fetch dashboard stats" }, { status: 500 });

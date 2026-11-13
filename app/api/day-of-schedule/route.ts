@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { dayOfSchedule, user } from "@/lib/db/schema";
-import { desc, eq } from "drizzle-orm";
+import { db, must, now } from "@/lib/db";
+import { DAY_OF_SCHEDULE_COLUMNS } from "@/lib/db/columns";
+import type { TablesUpdate } from "@/lib/db/types";
 import {
   assignSchedulingUpdateFields,
   parseOptionalCapacity,
@@ -18,24 +18,18 @@ import { logNamedTargetAction } from "@/lib/api/route-utils";
 // GET all day-of schedule events with creator info
 export async function GET() {
   try {
-    const allScheduleItems = await db
-      .select({
-        id: dayOfSchedule.id,
-        name: dayOfSchedule.name,
-        startTime: dayOfSchedule.startTime,
-        endTime: dayOfSchedule.endTime,
-        location: dayOfSchedule.location,
-        capacity: dayOfSchedule.capacity,
-        visibility: dayOfSchedule.visibility,
-        createdBy: dayOfSchedule.createdBy,
-        createdAt: dayOfSchedule.createdAt,
-        updatedAt: dayOfSchedule.updatedAt,
-        creatorEmail: user.email,
-        creatorName: user.name,
-      })
-      .from(dayOfSchedule)
-      .leftJoin(user, eq(dayOfSchedule.createdBy, user.id))
-      .orderBy(desc(dayOfSchedule.startTime));
+    const rows = must(
+      await db
+        .from("day_of_schedule")
+        .select(`${DAY_OF_SCHEDULE_COLUMNS},creator:user!created_by(email,name)`)
+        .order("start_time", { ascending: false }),
+    );
+
+    const allScheduleItems = rows.map(({ creator, ...item }) => ({
+      ...item,
+      creatorEmail: creator?.email ?? null,
+      creatorName: creator?.name ?? null,
+    }));
 
     return NextResponse.json(allScheduleItems);
   } catch (error) {
@@ -56,18 +50,21 @@ export async function POST(request: NextRequest) {
       const visibilityError = validateVisibility(visibility);
       if (visibilityError) return visibilityError;
 
-      const [newScheduleItem] = await db
-        .insert(dayOfSchedule)
-        .values({
-          name,
-          startTime: parseOptionalDate(startTime),
-          endTime: parseOptionalDate(endTime),
-          location: parseOptionalString(location),
-          capacity: parseOptionalCapacity(capacity),
-          visibility: visibility || "public",
-          createdBy: session.user.id,
-        })
-        .returning();
+      const newScheduleItem = must(
+        await db
+          .from("day_of_schedule")
+          .insert({
+            name,
+            start_time: parseOptionalDate(startTime),
+            end_time: parseOptionalDate(endTime),
+            location: parseOptionalString(location),
+            capacity: parseOptionalCapacity(capacity),
+            visibility: visibility || "public",
+            created_by: session.user.id,
+          })
+          .select(DAY_OF_SCHEDULE_COLUMNS)
+          .single(),
+      );
 
       await logNamedTargetAction(session, "CREATE_SCHEDULE", newScheduleItem.id, newScheduleItem.name);
 
@@ -92,13 +89,16 @@ export async function PATCH(request: NextRequest) {
       if (name !== undefined) updateData.name = name;
       assignSchedulingUpdateFields(updateData, { startTime, endTime, location, capacity });
       if (visibility !== undefined) updateData.visibility = visibility;
-      updateData.updatedAt = new Date();
+      updateData.updated_at = now();
 
-      const [updatedItem] = await db
-        .update(dayOfSchedule)
-        .set(updateData)
-        .where(eq(dayOfSchedule.id, id))
-        .returning();
+      const updatedItem = must(
+        await db
+          .from("day_of_schedule")
+          .update(updateData as TablesUpdate<"day_of_schedule">)
+          .eq("id", id)
+          .select(DAY_OF_SCHEDULE_COLUMNS)
+          .maybeSingle(),
+      );
 
       if (!updatedItem) {
         return NextResponse.json({ error: "Event not found" }, { status: 404 });
@@ -118,10 +118,9 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     return withDeleteContext(request, async ({ session, id }) => {
-      const [deletedItem] = await db
-        .delete(dayOfSchedule)
-        .where(eq(dayOfSchedule.id, id))
-        .returning();
+      const deletedItem = must(
+        await db.from("day_of_schedule").delete().eq("id", id).select("id,name").maybeSingle(),
+      );
 
       if (!deletedItem) {
         return NextResponse.json({ error: "Event not found" }, { status: 404 });
