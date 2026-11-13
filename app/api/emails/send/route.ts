@@ -5,7 +5,7 @@ import {
     renderTemplateToHtml,
     renderTemplateToText,
 } from "@/lib/templates";
-import { getFromAddress, getResend } from "@/lib/resend";
+import { getFromAddress, getResend, sendBatchWithRetry } from "@/lib/resend";
 import { db } from "@/lib/db";
 import { accessRequests, confirmTokens, participants, judges } from "@/lib/db/schema";
 import { eq, inArray, isNull, and } from "drizzle-orm";
@@ -30,9 +30,8 @@ const JUDGE_PORTAL_LINK_ID = "judge-portal-link";
 // Resend allows at most 100 emails per batch request.
 const BATCH_SIZE = 100;
 // Pause between batch requests to stay under Resend's per-second rate limit.
+// Retries of a failed batch are handled by sendBatchWithRetry (lib/resend.ts).
 const BATCH_DELAY_MS = 600;
-// Retries per batch after a rate_limit_exceeded error.
-const MAX_RATE_LIMIT_RETRIES = 2;
 
 type RecipientVars = {
     firstName: string;
@@ -426,10 +425,26 @@ export async function POST(request: NextRequest) {
             error?: string;
         }[] = [];
         const failedRecipients: { email: string; error: string }[] = [];
+        // Set when Resend returns an account-level error (quota, API key) that
+        // would fail every remaining batch; those batches are skipped, not sent.
+        let stopReason: string | undefined;
 
         for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
             const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
             const batch = recipients.slice(i, i + BATCH_SIZE);
+
+            if (stopReason) {
+                const skipError = `Not sent: stopped after ${stopReason}`;
+                failedRecipients.push(...batch.map((email) => ({ email, error: skipError })));
+                results.push({
+                    batch: batchNumber,
+                    count: batch.length,
+                    sentCount: 0,
+                    success: false,
+                    error: skipError,
+                });
+                continue;
+            }
 
             const emails = batch.map((email) => {
                 const vars = recipientVariables[email] ?? { firstName: "Hacker" };
@@ -442,43 +457,13 @@ export async function POST(request: NextRequest) {
                 };
             });
 
-            let messageIds: string[] | undefined;
-            let rejected: { email: string; error: string }[] = [];
-            let errorMessage: string | undefined;
+            const outcome = await sendBatchWithRetry(resend, emails, `${sendId}-${batchNumber}`);
 
-            for (let attempt = 0; ; attempt++) {
-                try {
-                    const { data, error } = await resend.batch.send(emails, {
-                        idempotencyKey: `${sendId}-${batchNumber}`,
-                        batchValidation: "permissive",
-                    });
-
-                    if (!error) {
-                        messageIds = data.data.map((entry) => entry.id);
-                        rejected = (data.errors ?? []).map((entry) => ({
-                            email: batch[entry.index] ?? `(batch index ${entry.index})`,
-                            error: entry.message,
-                        }));
-                        errorMessage = undefined;
-                        break;
-                    }
-
-                    errorMessage = `${error.name}: ${error.message}`;
-                    if (
-                        error.name === "rate_limit_exceeded" &&
-                        attempt < MAX_RATE_LIMIT_RETRIES
-                    ) {
-                        await sleep(1000 * (attempt + 1));
-                        continue;
-                    }
-                } catch (error) {
-                    errorMessage =
-                        error instanceof Error ? error.message : "Unknown error";
-                }
-                break;
-            }
-
-            if (messageIds) {
+            if (outcome.ok) {
+                const rejected = outcome.rejected.map((entry) => ({
+                    email: batch[entry.index] ?? `(batch index ${entry.index})`,
+                    error: entry.message,
+                }));
                 const sentCount = batch.length - rejected.length;
                 if (rejected.length > 0) {
                     console.error(
@@ -495,24 +480,27 @@ export async function POST(request: NextRequest) {
                     count: batch.length,
                     sentCount,
                     success: rejected.length === 0,
-                    messageIds,
+                    messageIds: outcome.messageIds,
                 });
             } else {
-                const batchError = errorMessage ?? "Unknown error";
-                console.error(`Batch ${batchNumber} failed:`, batchError);
+                console.error(`Batch ${batchNumber} failed:`, outcome.error);
                 failedRecipients.push(
-                    ...batch.map((email) => ({ email, error: batchError })),
+                    ...batch.map((email) => ({ email, error: outcome.error })),
                 );
                 results.push({
                     batch: batchNumber,
                     count: batch.length,
                     sentCount: 0,
                     success: false,
-                    error: batchError,
+                    error: outcome.error,
                 });
+                if (outcome.stop) {
+                    stopReason = outcome.error;
+                    console.error(`Stopping bulk send after batch ${batchNumber}: ${stopReason}`);
+                }
             }
 
-            if (i + BATCH_SIZE < recipients.length) {
+            if (!stopReason && i + BATCH_SIZE < recipients.length) {
                 await sleep(BATCH_DELAY_MS);
             }
         }
@@ -523,6 +511,7 @@ export async function POST(request: NextRequest) {
             status: recipientType === "status" ? status : undefined,
             recipientCount: recipients.length,
             sentBy: "authenticated-user",
+            stopReason,
             results,
         });
 
@@ -534,12 +523,14 @@ export async function POST(request: NextRequest) {
             message:
                 failedCount === 0
                     ? `Sent to ${recipients.length} recipient(s)`
-                    : `Sent to ${successCount} of ${recipients.length} recipient(s); ${failedCount} failed`,
+                    : `Sent to ${successCount} of ${recipients.length} recipient(s); ${failedCount} failed` +
+                      (stopReason ? `. Stopped early: ${stopReason}` : ""),
             results,
             recipientCount: recipients.length,
             successCount,
             failedCount,
             failedRecipients,
+            stopReason: stopReason ?? null,
         });
     } catch (error) {
         console.error("Error sending emails:", error);
