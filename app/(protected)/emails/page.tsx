@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Eye, Send } from "lucide-react";
+import { Check, Copy, Eye, Send } from "lucide-react";
 import { emailTemplates } from "@/lib/templates";
 import { render } from "@react-email/render";
 import { PARTICIPANT_STATUSES } from "@/lib/participant-status";
@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/dialog";
 
 type RecipientType = "all" | "status" | "specific" | "specific-judges" | "judges";
+
+type FailedRecipient = { email: string; error: string };
 
 function EmailPreviewTab() {
   const [selectedTemplateId, setSelectedTemplateId] = useState(
@@ -122,6 +124,9 @@ function EmailPreviewTab() {
   );
 }
 
+const MAY_HAVE_SENT_HINT =
+  "Some emails may already have been sent. Check the Resend dashboard before sending again.";
+
 function SendEmailsTab() {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [recipientType, setRecipientType] = useState<RecipientType>("all");
@@ -132,7 +137,19 @@ function SendEmailsTab() {
   const [statusMessage, setStatusMessage] = useState<{
     type: "success" | "error";
     text: string;
+    failedRecipients?: FailedRecipient[];
   } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const copyFailedEmails = async (failed: FailedRecipient[]) => {
+    try {
+      await navigator.clipboard.writeText(failed.map((r) => r.email).join(", "));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   const handleSendEmails = async () => {
     if (!selectedTemplateId) {
@@ -171,6 +188,7 @@ function SendEmailsTab() {
     setShowConfirmDialog(false);
     setIsSending(true);
     setStatusMessage(null);
+    setCopied(false);
 
     try {
       const response = await fetch("/api/emails/send", {
@@ -190,26 +208,47 @@ function SendEmailsTab() {
         }),
       });
 
-      if (response.ok) {
-        const data = await response.json();
+      // The body may not be JSON, e.g. the host's 504 page when the function
+      // is killed at its time limit after some batches already went out.
+      const data = await response.json().catch(() => null);
+
+      if (!data) {
         setStatusMessage({
-          type: "success",
-          text: data.message || "Emails sent successfully!",
+          type: "error",
+          text: `${
+            response.ok
+              ? "The server sent an unreadable response"
+              : `The server stopped responding (HTTP ${response.status})`
+          }. ${MAY_HAVE_SENT_HINT}`,
         });
-        if (recipientType === "specific") {
-          setSpecificEmails("");
+      } else if (response.ok) {
+        const failedRecipients: FailedRecipient[] = data.failedRecipients ?? [];
+        if (data.success === false || failedRecipients.length > 0) {
+          setStatusMessage({
+            type: "error",
+            text: data.message || "Some emails failed to send.",
+            failedRecipients,
+          });
+        } else {
+          setStatusMessage({
+            type: "success",
+            text: data.message || "Emails sent successfully!",
+          });
+          if (recipientType === "specific") {
+            setSpecificEmails("");
+          }
         }
       } else {
-        const data = await response.json();
         setStatusMessage({
           type: "error",
           text: data.error || "Failed to send emails.",
         });
       }
     } catch {
+      // fetch only rejects on a network failure, which can happen mid-send
       setStatusMessage({
         type: "error",
-        text: "An error occurred while sending emails.",
+        text: `Lost connection to the server while sending. ${MAY_HAVE_SENT_HINT}`,
       });
     } finally {
       setIsSending(false);
@@ -356,7 +395,40 @@ function SendEmailsTab() {
               : "bg-destructive/10 text-destructive border border-destructive/20"
           }`}
         >
-          {statusMessage.text}
+          <p>{statusMessage.text}</p>
+          {statusMessage.failedRecipients &&
+            statusMessage.failedRecipients.length > 0 && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium">
+                    Failed recipients ({statusMessage.failedRecipients.length})
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      copyFailedEmails(statusMessage.failedRecipients ?? [])
+                    }
+                  >
+                    {copied ? (
+                      <Check className="h-4 w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                    {copied ? "Copied" : "Copy emails"}
+                  </Button>
+                </div>
+                <ul className="max-h-48 overflow-y-auto rounded-md border border-destructive/20 bg-background/50 p-2 text-sm">
+                  {statusMessage.failedRecipients.map((r, i) => (
+                    <li key={`${r.email}-${i}`} className="break-all py-0.5">
+                      <span className="font-medium">{r.email}</span>
+                      <span className="text-muted-foreground"> — {r.error}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
         </div>
       )}
 

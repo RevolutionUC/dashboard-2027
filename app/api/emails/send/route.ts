@@ -5,11 +5,13 @@ import {
     renderTemplateToHtml,
     renderTemplateToText,
 } from "@/lib/templates";
-import formData from "form-data";
-import Mailgun from "mailgun.js";
+import { getFromAddress, getResend, sendBatchWithRetry } from "@/lib/resend";
 import { chunk, db, fetchAll, must, now } from "@/lib/db";
 import type { Enums } from "@/lib/db/types";
-import { randomBytes } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
+
+// Batch sends take several Resend calls; allow up to 60s on serverless hosts.
+export const maxDuration = 60;
 
 type RecipientType = "all" | "status" | "specific" | "specific-judges" | "judges";
 
@@ -24,7 +26,109 @@ interface SendEmailRequest {
 const CONFIRM_ATTENDANCE_ID = "confirm-attendance";
 const JUDGE_PORTAL_LINK_ID = "judge-portal-link";
 
+// Resend allows at most 100 emails per batch request.
+const BATCH_SIZE = 100;
+// Pause between batch requests to stay under Resend's per-second rate limit.
+// Retries of a failed batch are handled by sendBatchWithRetry (lib/resend.ts).
+const BATCH_DELAY_MS = 600;
+// Time budget, measured from the start of the request, so the route returns a
+// normal response before the host kills it at maxDuration:
+// no new batch starts after NEW_BATCH_CUTOFF_MS, and no Resend call (including
+// retries) runs past SEND_DEADLINE_MS, leaving a few seconds to respond.
+const NEW_BATCH_CUTOFF_MS = (maxDuration - 15) * 1000;
+const SEND_DEADLINE_MS = (maxDuration - 5) * 1000;
+// Abort a single Resend call after this long without a response.
+const ATTEMPT_TIMEOUT_MS = 15_000;
+
+type RecipientVars = {
+    firstName: string;
+    yesUrl?: string;
+    noUrl?: string;
+    portalUrl?: string;
+};
+
+// The template is rendered once with these tokens, then each recipient's
+// values are substituted in. Tokens are upper-case so upper-casing by the
+// plain-text renderer leaves them unchanged.
+const PLACEHOLDERS: Record<keyof RecipientVars, string> = {
+    firstName: "__RUC_FIRSTNAME__",
+    yesUrl: "__RUC_YESURL__",
+    noUrl: "__RUC_NOURL__",
+    portalUrl: "__RUC_PORTALURL__",
+};
+const PLACEHOLDER_KEYS = Object.keys(PLACEHOLDERS) as (keyof RecipientVars)[];
+const PLACEHOLDER_PATTERN = new RegExp(
+    Object.values(PLACEHOLDERS).join("|"),
+    "g",
+);
+// Matches anything that looks like a placeholder, including mangled ones
+const ANY_PLACEHOLDER_PATTERN = /__ruc_[a-z0-9_]*?__/gi;
+
+function escapeHtml(value: string): string {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function fillPlaceholders(
+    content: string,
+    vars: RecipientVars,
+    escape: boolean,
+): string {
+    return content.replace(PLACEHOLDER_PATTERN, (token) => {
+        const key = PLACEHOLDER_KEYS.find((k) => PLACEHOLDERS[k] === token);
+        const value = (key && vars[key]) ?? "";
+        return escape ? escapeHtml(value) : value;
+    });
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Turn off each participant's old confirm links, keeping only the new link
+ * we just emailed them.
+ *
+ * Only call this for people whose email Resend accepted. If someone's email
+ * failed, was skipped or timed out, their old link keeps working, so they can
+ * still RSVP.
+ *
+ * Errors are logged, not thrown, because the emails have already been sent.
+ */
+async function retireOldConfirmTokens(
+    participantIds: string[],
+    newTokenByParticipant: Map<string, string>,
+): Promise<void> {
+    if (participantIds.length === 0) return;
+    const usedAt = now();
+    // Filters go in the URL, so keep each request's ID + token lists small.
+    for (const ids of chunk(participantIds, 50)) {
+        const keepTokens = ids
+            .map((id) => newTokenByParticipant.get(id))
+            .filter((token): token is string => !!token);
+        try {
+            let query = db
+                .from("confirm_tokens")
+                .update({ used_at: usedAt })
+                .in("participant_id", ids)
+                .is("used_at", null);
+            if (keepTokens.length > 0) {
+                // Tokens are base64url, so they need no quoting inside the list.
+                query = query.not("token", "in", `(${keepTokens.join(",")})`);
+            }
+            must(await query);
+        } catch (error) {
+            console.error("Failed to retire old confirm tokens:", { participantIds: ids, error });
+        }
+    }
+}
+
 export async function POST(request: NextRequest) {
+    const requestStart = Date.now();
     try {
         const sessionInfo = await getAccessInfo();
 
@@ -90,14 +194,14 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+        const resend = getResend();
+        if (!resend) {
             return NextResponse.json(
-                { error: "Mailgun configuration is missing" },
+                { error: "Resend configuration is missing" },
                 { status: 500 },
             );
         }
 
-        // Fetch recipients and build personalization map (email → {firstName, userId})
         let recipients: string[] = [];
         const participantMap = new Map<string, { firstName: string; userId: string }>();
 
@@ -177,6 +281,14 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        const seenEmails = new Set<string>();
+        recipients = recipients.filter((email) => {
+            const key = email.toLowerCase();
+            if (seenEmails.has(key)) return false;
+            seenEmails.add(key);
+            return true;
+        });
+
         if (recipients.length === 0) {
             return NextResponse.json(
                 { error: "No recipients found matching the criteria" },
@@ -235,70 +347,14 @@ export async function POST(request: NextRequest) {
         const isJudgePortalLink = templateId === JUDGE_PORTAL_LINK_ID;
         const baseUrl = "https://revolutionuc.com";
 
-        // Generate short-lived confirmation tokens for confirm-attendance emails
-        const tokenMap = new Map<string, string>(); // participantId → token
-        if (isConfirmAttendance) {
-            const participantIds = Array.from(participantMap.values())
-                .map((p) => p.userId)
-                .filter(Boolean);
-
-            if (participantIds.length > 0) {
-                // Invalidate existing unused tokens for these participants
-                const usedAt = now();
-                for (const ids of chunk(participantIds)) {
-                    must(
-                        await db
-                            .from("confirm_tokens")
-                            .update({ used_at: usedAt })
-                            .in("participant_id", ids)
-                            .is("used_at", null),
-                    );
-                }
-
-                // Generate and insert new tokens
-                const expiresAtDate = new Date();
-                expiresAtDate.setDate(expiresAtDate.getDate() + 7);
-                const expiresAt = expiresAtDate.toISOString();
-
-                const newTokens = Array.from(participantMap.entries()).map(
-                    ([email, p]) => ({
-                        token: randomBytes(32).toString("base64url"),
-                        participant_id: p.userId,
-                        email,
-                        expires_at: expiresAt,
-                    }),
-                );
-
-                const inserted = (
-                    await Promise.all(
-                        chunk(newTokens, 500).map(async (rows) =>
-                            must(
-                                await db
-                                    .from("confirm_tokens")
-                                    .insert(rows)
-                                    .select("token,participantId:participant_id"),
-                            ),
-                        ),
-                    )
-                ).flat();
-
-                for (const row of inserted) {
-                    tokenMap.set(row.participantId, row.token);
-                }
-            }
-        }
-
-        // Render template once with Mailgun recipient-variable placeholders.
-        // Mailgun substitutes %recipient.X% per delivery, so each recipient
-        // sees their own personalized content with a single render + API call.
         const templateProps: Record<string, string | boolean | undefined> = {
-            firstName: "%recipient.firstName%",
+            firstName: PLACEHOLDERS.firstName,
             ...(isConfirmAttendance && {
-                yesConfirmationUrl: "%recipient.yesUrl%",
-                noConfirmationUrl: "%recipient.noUrl%",
+                yesConfirmationUrl: PLACEHOLDERS.yesUrl,
+                noConfirmationUrl: PLACEHOLDERS.noUrl,
             }),
             ...(isJudgePortalLink && {
-                portalUrl: "%recipient.portalUrl%",
+                portalUrl: PLACEHOLDERS.portalUrl,
             }),
         };
 
@@ -314,89 +370,188 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Build per-recipient variable map for Mailgun substitution
-        const recipientVariables: Record<string, Record<string, string>> = {};
+        const knownTokens = new Set(Object.values(PLACEHOLDERS));
+        const mangledTokens = Array.from(
+            new Set(
+                [...html.matchAll(ANY_PLACEHOLDER_PATTERN), ...text.matchAll(ANY_PLACEHOLDER_PATTERN)]
+                    .map((match) => match[0])
+                    .filter((token) => !knownTokens.has(token)),
+            ),
+        );
+        if (mangledTokens.length > 0) {
+            console.error("Template rendered with altered placeholders:", {
+                templateId,
+                mangledTokens,
+            });
+            return NextResponse.json(
+                { error: "Failed to personalize email template" },
+                { status: 500 },
+            );
+        }
+
+        // Create new confirm-attendance tokens only once the template has
+        // rendered, so a render failure leaves everyone's existing link alone.
+        // Old tokens are NOT retired here: that happens per batch, only for
+        // recipients whose new email Resend accepted (retireOldConfirmTokens).
+        const tokenMap = new Map<string, string>(); // participantId → new token
+        if (isConfirmAttendance && participantMap.size > 0) {
+            const expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + 7);
+
+            const newTokens = Array.from(participantMap.entries()).map(([email, p]) => ({
+                token: randomBytes(32).toString("base64url"),
+                participant_id: p.userId,
+                email,
+                expires_at: expiresAt.toISOString(),
+            }));
+
+            const inserted = must(
+                await db
+                    .from("confirm_tokens")
+                    .insert(newTokens)
+                    .select("token,participant_id"),
+            );
+
+            for (const row of inserted) {
+                tokenMap.set(row.participant_id, row.token);
+            }
+        }
+
+        const judgingPortalUrl =
+            process.env.NEXT_PUBLIC_JUDGING_PORTAL_URL ||
+            "https://dashboard.revolutionuc.com/judgingportal";
+        const recipientVariables: Record<string, RecipientVars> = {};
         for (const email of recipients) {
             const participant = participantMap.get(email);
-            const vars: Record<string, string> = {
-                firstName: participant?.firstName ?? "Hacker",
+            const vars: RecipientVars = {
+                firstName: participant?.firstName?.trim() || "Hacker",
             };
-            if (isConfirmAttendance && participant) {
-                const confirmToken = tokenMap.get(participant.userId);
+            if (isConfirmAttendance) {
+                const confirmToken = participant
+                    ? tokenMap.get(participant.userId)
+                    : undefined;
                 if (confirmToken) {
                     vars.yesUrl = `${baseUrl}/confirm?token=${confirmToken}&response=yes`;
                     vars.noUrl = `${baseUrl}/confirm?token=${confirmToken}&response=no`;
                 } else {
-                    // Fallback if token generation failed for this participant
                     vars.yesUrl = `${baseUrl}/confirm?response=yes`;
                     vars.noUrl = `${baseUrl}/confirm?response=no`;
                 }
             }
-            if (isJudgePortalLink && participant?.userId) {
-                const judgingPortalUrl = process.env.NEXT_PUBLIC_JUDGING_PORTAL_URL || "https://dashboard.revolutionuc.com/judgingportal";
-                vars.portalUrl = `${judgingPortalUrl}/${participant.userId}`;
+            if (isJudgePortalLink) {
+                vars.portalUrl = participant?.userId
+                    ? `${judgingPortalUrl}/${participant.userId}`
+                    : judgingPortalUrl;
             }
             recipientVariables[email] = vars;
         }
 
-        // Initialize Mailgun
-        const mailgun = new Mailgun(formData);
-        const mg = mailgun.client({
-            username: "api",
-            key: process.env.MAILGUN_API_KEY,
-        });
-
-        const mailgunDomain = process.env.MAILGUN_DOMAIN;
-        const fromEmail =
-            process.env.MAILGUN_FROM_EMAIL || "info@revolutionuc.com";
-
-        // Send in batches of 1000 (Mailgun's limit)
-        const BATCH_SIZE = 1000;
-        const results = [];
+        const fromEmail = getFromAddress();
+        const sendId = randomUUID();
+        const results: {
+            batch: number;
+            count: number;
+            sentCount: number;
+            success: boolean;
+            messageIds?: string[];
+            error?: string;
+        }[] = [];
+        const failedRecipients: { email: string; error: string }[] = [];
+        // Set when Resend returns an account-level error (quota, API key) that
+        // would fail every remaining batch; those batches are skipped, not sent.
+        let stopReason: string | undefined;
 
         for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
+            const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
             const batch = recipients.slice(i, i + BATCH_SIZE);
-            const batchVars = Object.fromEntries(
-                batch.map((email) => [
-                    email,
-                    recipientVariables[email] ?? { firstName: "Hacker" },
-                ]),
-            );
 
-            try {
-                const response = await mg.messages.create(mailgunDomain, {
-                    from: fromEmail,
-                    to: batch,
-                    subject: emailSubject,
-                    html: html,
-                    text: text,
-                    "recipient-variables": JSON.stringify(batchVars),
-                });
+            const elapsedMs = Date.now() - requestStart;
+            if (!stopReason && elapsedMs > NEW_BATCH_CUTOFF_MS) {
+                stopReason = `server time limit reached after ${Math.round(elapsedMs / 1000)}s; re-send to the remaining addresses`;
+                console.error(`Stopping bulk send before batch ${batchNumber}: ${stopReason}`);
+            }
 
-                console.log(
-                    `Batch ${Math.floor(i / BATCH_SIZE) + 1} sent (${batch.length} recipients):`,
-                    response.id,
-                );
+            if (stopReason) {
+                const skipError = `Not sent: stopped after ${stopReason}`;
+                failedRecipients.push(...batch.map((email) => ({ email, error: skipError })));
                 results.push({
-                    batch: Math.floor(i / BATCH_SIZE) + 1,
+                    batch: batchNumber,
                     count: batch.length,
-                    success: true,
-                    messageId: response.id,
-                });
-            } catch (error) {
-                console.error(
-                    `Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`,
-                    error,
-                );
-                results.push({
-                    batch: Math.floor(i / BATCH_SIZE) + 1,
-                    count: batch.length,
+                    sentCount: 0,
                     success: false,
-                    error:
-                        error instanceof Error
-                            ? error.message
-                            : "Unknown error",
+                    error: skipError,
                 });
+                continue;
+            }
+
+            const emails = batch.map((email) => {
+                const vars = recipientVariables[email] ?? { firstName: "Hacker" };
+                return {
+                    from: fromEmail,
+                    to: [email],
+                    subject: emailSubject,
+                    html: fillPlaceholders(html, vars, true),
+                    text: fillPlaceholders(text, vars, false),
+                };
+            });
+
+            const outcome = await sendBatchWithRetry(resend, emails, `${sendId}-${batchNumber}`, {
+                attemptTimeoutMs: ATTEMPT_TIMEOUT_MS,
+                deadline: requestStart + SEND_DEADLINE_MS,
+            });
+
+            if (outcome.ok) {
+                const rejected = outcome.rejected.map((entry) => ({
+                    email: batch[entry.index] ?? `(batch index ${entry.index})`,
+                    error: entry.message,
+                }));
+                const sentCount = batch.length - rejected.length;
+
+                if (isConfirmAttendance) {
+                    const rejectedEmails = new Set(rejected.map((r) => r.email));
+                    const acceptedParticipantIds = batch
+                        .filter((email) => !rejectedEmails.has(email))
+                        .map((email) => participantMap.get(email)?.userId)
+                        .filter((id): id is string => !!id && tokenMap.has(id));
+                    await retireOldConfirmTokens(acceptedParticipantIds, tokenMap);
+                }
+                if (rejected.length > 0) {
+                    console.error(
+                        `Batch ${batchNumber}: ${rejected.length} email(s) rejected:`,
+                        rejected,
+                    );
+                    failedRecipients.push(...rejected);
+                }
+                console.log(
+                    `Batch ${batchNumber} sent (${sentCount}/${batch.length} recipients)`,
+                );
+                results.push({
+                    batch: batchNumber,
+                    count: batch.length,
+                    sentCount,
+                    success: rejected.length === 0,
+                    messageIds: outcome.messageIds,
+                });
+            } else {
+                console.error(`Batch ${batchNumber} failed:`, outcome.error);
+                failedRecipients.push(
+                    ...batch.map((email) => ({ email, error: outcome.error })),
+                );
+                results.push({
+                    batch: batchNumber,
+                    count: batch.length,
+                    sentCount: 0,
+                    success: false,
+                    error: outcome.error,
+                });
+                if (outcome.stop) {
+                    stopReason = outcome.error;
+                    console.error(`Stopping bulk send after batch ${batchNumber}: ${stopReason}`);
+                }
+            }
+
+            if (!stopReason && i + BATCH_SIZE < recipients.length) {
+                await sleep(BATCH_DELAY_MS);
             }
         }
 
@@ -406,19 +561,26 @@ export async function POST(request: NextRequest) {
             status: recipientType === "status" ? status : undefined,
             recipientCount: recipients.length,
             sentBy: "authenticated-user",
+            stopReason,
             results,
         });
 
-        const successCount = results.filter((r) => r.success).length;
-        const failedCount = results.length - successCount;
+        const failedCount = failedRecipients.length;
+        const successCount = recipients.length - failedCount;
 
         return NextResponse.json({
             success: failedCount === 0,
-            message: `Sent to ${recipients.length} recipient(s)`,
+            message:
+                failedCount === 0
+                    ? `Sent to ${recipients.length} recipient(s)`
+                    : `Sent to ${successCount} of ${recipients.length} recipient(s); ${failedCount} failed` +
+                      (stopReason ? `. Stopped early: ${stopReason}` : ""),
             results,
             recipientCount: recipients.length,
             successCount,
             failedCount,
+            failedRecipients,
+            stopReason: stopReason ?? null,
         });
     } catch (error) {
         console.error("Error sending emails:", error);
