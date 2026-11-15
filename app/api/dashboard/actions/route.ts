@@ -1,5 +1,6 @@
 import { eq, desc } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { isTeam } from "@/lib/dashboard/team";
 import { requireAuthenticatedSession } from "@/lib/api/session-auth";
 import {
   getActionPermissions,
@@ -67,6 +68,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Title is required" }, { status: 400 });
   }
 
+  if (!isTeam(data.team)) {
+  return NextResponse.json({ error: "Choose a valid team" }, { status: 400 });
+}
+
+if (
+  data.forTeam !== undefined &&
+  data.forTeam !== null &&
+  data.forTeam !== "" &&
+  !isTeam(data.forTeam)
+) {
+  return NextResponse.json(
+    { error: "Choose a valid team for this item" },
+    { status: 400 },
+  );
+}
+
+const team = data.team;
+const forTeam = isTeam(data.forTeam) ? data.forTeam : null;
+
   if (data.details !== undefined && typeof data.details !== "string") {
     return NextResponse.json(
       { error: "Details must be text" },
@@ -82,6 +102,8 @@ export async function POST(request: Request) {
   .insert(actionItems)
   .values({
     title,
+    team,
+    forTeam,
     details,
     status: "open",
     createdBy: session.user.id,
@@ -128,6 +150,8 @@ export async function GET() {
     .select({
       id: actionItems.id,
       title: actionItems.title,
+      team: actionItems.team,
+      forTeam: actionItems.forTeam,
       details: actionItems.details,
       status: actionItems.status,
       createdAt: actionItems.createdAt,

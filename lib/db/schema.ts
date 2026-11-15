@@ -291,6 +291,8 @@ export const suggestions = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     content: text("content").notNull(),
+    team: text("team"),
+    forTeam: text("for_team"),
     status: suggestionStatus("status").notNull().default("pending"),
     submitterUserId: text("submitter_user_id").references(() => user.id, {
       onDelete: "set null",
@@ -310,6 +312,8 @@ export const actionItems = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title").notNull(),
+    team: text("team"),
+    forTeam: text("for_team"),
     details: text("details"),
     status: actionItemStatus("status").notNull().default("open"),
     createdBy: text("created_by").references(() => user.id, {

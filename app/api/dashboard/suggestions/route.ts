@@ -1,5 +1,6 @@
 import { and, eq, desc } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { isTeam } from "@/lib/dashboard/team";
 import { requireAuthenticatedSession } from "@/lib/api/session-auth";
 import {
   getActionPermissions,
@@ -76,10 +77,31 @@ export async function POST(request: Request) {
     );
   }
 
+  if (!isTeam(data.team)) {
+  return NextResponse.json({ error: "Choose a valid team" }, { status: 400 });
+}
+
+if (
+  data.forTeam !== undefined &&
+  data.forTeam !== null &&
+  data.forTeam !== "" &&
+  !isTeam(data.forTeam)
+) {
+  return NextResponse.json(
+    { error: "Choose a valid team for this item" },
+    { status: 400 },
+  );
+}
+
+const team = data.team;
+const forTeam = isTeam(data.forTeam) ? data.forTeam : null;
+
   const [suggestion] = await db
     .insert(suggestions)
     .values({
       content,
+      team,
+      forTeam,
       status: "pending",
       submitterUserId: session.user.id,
     })
@@ -132,6 +154,8 @@ export async function GET() {
     .select({
       id: suggestions.id,
       content: suggestions.content,
+      team: suggestions.team,
+      forTeam: suggestions.forTeam,
       status: suggestions.status,
       createdAt: suggestions.createdAt,
       submitterName: userTable.name,
@@ -238,6 +262,8 @@ export async function PATCH(request: Request) {
         .insert(actionItems)
         .values({
           title: suggestion.content,
+          team: suggestion.team,
+          forTeam : suggestion.forTeam,
           details: null,
           status: "open",
           createdBy: session.user.id,
