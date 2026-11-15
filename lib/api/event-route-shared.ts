@@ -5,9 +5,10 @@ import { requireNonOrganizerSession, requireSessionWithId } from "@/lib/api/rout
 export const EVENT_VISIBILITIES = ["internal", "public"] as const;
 export const EVENT_TYPES = ["WORKSHOP", "FOOD"] as const;
 
-export function parseOptionalDate(value: unknown): Date | null {
+/** Parses an optional date string into an ISO timestamp for the database. */
+export function parseOptionalDate(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
-  return new Date(value);
+  return new Date(value).toISOString();
 }
 
 export function parseOptionalString(value: unknown): string | null {
@@ -31,8 +32,9 @@ export function assignSchedulingUpdateFields(
   },
 ) {
   const { startTime, endTime, location, capacity } = values;
-  if (startTime !== undefined) updateData.startTime = parseOptionalDate(startTime);
-  if (endTime !== undefined) updateData.endTime = parseOptionalDate(endTime);
+  // Keys are database column names
+  if (startTime !== undefined) updateData.start_time = parseOptionalDate(startTime);
+  if (endTime !== undefined) updateData.end_time = parseOptionalDate(endTime);
   if (location !== undefined) updateData.location = parseOptionalString(location);
   if (capacity !== undefined) updateData.capacity = parseOptionalCapacity(capacity);
 }
@@ -100,9 +102,15 @@ export async function requireDeleteContext(request: NextRequest) {
   return { session: sessionAndId.session, id: sessionAndId.id } as const;
 }
 
+/** The success branch of a require*Context result (handlers never see the error case). */
+type ContextOf<F extends (...args: never[]) => Promise<unknown>> = Exclude<
+  Awaited<ReturnType<F>>,
+  { error: NextResponse }
+>;
+
 export async function withCreateContext(
   request: NextRequest,
-  handler: (context: Awaited<ReturnType<typeof requireCreateContext>>) => Promise<Response>,
+  handler: (context: ContextOf<typeof requireCreateContext>) => Promise<Response>,
 ) {
   const createContext = await requireCreateContext(request);
   if ("error" in createContext) {
@@ -113,7 +121,7 @@ export async function withCreateContext(
 
 export async function withUpdateContext(
   request: NextRequest,
-  handler: (context: Awaited<ReturnType<typeof requireUpdateContext>>) => Promise<Response>,
+  handler: (context: ContextOf<typeof requireUpdateContext>) => Promise<Response>,
 ) {
   const updateContext = await requireUpdateContext(request);
   if ("error" in updateContext) {
@@ -124,7 +132,7 @@ export async function withUpdateContext(
 
 export async function withDeleteContext(
   request: NextRequest,
-  handler: (context: Awaited<ReturnType<typeof requireDeleteContext>>) => Promise<Response>,
+  handler: (context: ContextOf<typeof requireDeleteContext>) => Promise<Response>,
 ) {
   const deleteContext = await requireDeleteContext(request);
   if ("error" in deleteContext) {

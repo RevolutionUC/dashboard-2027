@@ -1,22 +1,8 @@
-import { db } from "@/lib/db";
-import { auditLogs } from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
+import type { Enums, Json } from "@/lib/db/types";
 
-// Action types
-type AuditAction =
-  | "SIGNED_IN"
-  | "CHECKIN"
-  | "WORKSHOP_CHECKIN"
-  | "FOOD_CHECKIN"
-  | "UPDATE_STATUS"
-  | "CREATE_EVENT"
-  | "UPDATE_EVENT"
-  | "DELETE_EVENT"
-  | "CREATE_SCHEDULE"
-  | "UPDATE_SCHEDULE"
-  | "DELETE_SCHEDULE"
-  | "APPROVE_USER"
-  | "DENY_USER"
-  | "REVOKE_USER";
+// Action types (the `actions` enum in the database)
+export type AuditAction = Enums<"actions">;
 
 interface LogActionParams {
   userId: string;
@@ -39,15 +25,17 @@ export async function logAction({
   details = null,
 }: LogActionParams): Promise<void> {
   try {
-    await db.insert(auditLogs).values({
-      user_id: userId,
-      name,
-      email,
-      action,
-      session_id: sessionId,
-      target_id: targetId,
-      details,
-    });
+    must(
+      await db.from("audit_log").insert({
+        user_id: userId,
+        name,
+        email,
+        action,
+        session_id: sessionId,
+        target_id: targetId,
+        details: details as Json,
+      }),
+    );
   } catch (err) {
     console.error("Audit log failed (non-fatal):", err);
   }

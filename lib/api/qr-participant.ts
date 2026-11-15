@@ -1,23 +1,16 @@
-import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { participants } from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
 
 export async function getParticipantByUserId(userId: string) {
-  const [participant] = await db
-    .select({
-      user_id: participants.user_id,
-      firstName: participants.firstName,
-      lastName: participants.lastName,
-      email: participants.email,
-      status: participants.status,
-      checkedIn: participants.checkedIn,
-      shirtSize: participants.shirtSize,
-      dietRestrictions: participants.dietRestrictions,
-    })
-    .from(participants)
-    .where(eq(participants.user_id, userId))
-    .limit(1);
+  const participant = must(
+    await db
+      .from("participants")
+      .select(
+        "user_id,firstName:first_name,lastName:last_name,email,status,checkedIn:checked_in,shirtSize:shirt_size,dietRestrictions:diet_restrictions",
+      )
+      .eq("user_id", userId)
+      .maybeSingle(),
+  );
 
   if (!participant) {
     return {

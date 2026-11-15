@@ -1,47 +1,44 @@
-import { count, eq } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { db } from "@/lib/db";
-import {
-  assignments,
-  categories,
-  judgeGroups,
-  judges,
-  projects,
-} from "@/lib/db/schema";
+import { db, fetchAll } from "@/lib/db";
 import { AssignSubmissionsButton } from "./assign-submissions-button";
 import { ClearAssignmentsButton } from "./clear-assignments-button";
 
 export default async function AssignmentsPage() {
   // Fetch all assignments with judge group and project info
-  const assignmentRows = await db
-    .select({
-      judgeGroupId: assignments.judgeGroupId,
-      projectId: assignments.projectId,
-      judgeGroupName: judgeGroups.name,
-      categoryId: judgeGroups.categoryId,
-      categoryName: categories.name,
-      categoryType: categories.type,
-      projectName: projects.name,
-    })
-    .from(assignments)
-    .innerJoin(judgeGroups, eq(assignments.judgeGroupId, judgeGroups.id))
-    .innerJoin(categories, eq(judgeGroups.categoryId, categories.id))
-    .innerJoin(projects, eq(assignments.projectId, projects.id))
-    .orderBy(judgeGroups.name, projects.name);
+  const assignmentRows = (
+    await fetchAll(() =>
+      db
+        .from("assignments")
+        .select(
+          "judgeGroupId:judge_group_id,projectId:project_id,judgeGroup:judge_groups!inner(name,categoryId:category_id,category:categories!inner(name,type)),project:projects!inner(name)",
+        )
+        .order("judge_group_id")
+        .order("project_id"),
+    )
+  )
+    .map((row) => ({
+      judgeGroupId: row.judgeGroupId,
+      projectId: row.projectId,
+      judgeGroupName: row.judgeGroup.name,
+      categoryId: row.judgeGroup.categoryId,
+      categoryName: row.judgeGroup.category.name,
+      categoryType: row.judgeGroup.category.type,
+      projectName: row.project.name,
+    }))
+    .sort(
+      (a, b) =>
+        a.judgeGroupName.localeCompare(b.judgeGroupName) || a.projectName.localeCompare(b.projectName),
+    );
 
-  // Fetch judge counts for each group
-  const judgeCounts = await db
-    .select({
-      judgeGroupId: judges.judgeGroupId,
-      count: count(judges.id),
-    })
-    .from(judges)
-    .groupBy(judges.judgeGroupId);
+  // Count judges in each group
+  const judgesWithGroup = await fetchAll(() =>
+    db.from("judges").select("id,judgeGroupId:judge_group_id").not("judge_group_id", "is", null).order("id"),
+  );
 
-  const judgeCountByGroup = judgeCounts.reduce(
+  const judgeCountByGroup = judgesWithGroup.reduce(
     (acc, row) => {
       if (row.judgeGroupId !== null) {
-        acc[row.judgeGroupId] = row.count;
+        acc[row.judgeGroupId] = (acc[row.judgeGroupId] ?? 0) + 1;
       }
       return acc;
     },

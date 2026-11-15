@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { logAction } from "@/lib/audit";
-import { getSessionWithRole } from "@/lib/auth";
+import { type AuditAction, logAction } from "@/lib/audit";
+import { getAccessInfo } from "@/lib/auth";
 
 interface AuthorizedSession {
   user: {
@@ -15,10 +15,14 @@ type AuthResult =
   | { session: AuthorizedSession };
 
 export async function requireNonOrganizerSession(): Promise<AuthResult> {
-  const sessionInfo = await getSessionWithRole();
+  const sessionInfo = await getAccessInfo();
 
   if (!sessionInfo) {
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+
+  if (!sessionInfo.isApproved) {
+    return { error: NextResponse.json({ error: "Access not approved" }, { status: 403 }) };
   }
 
   if (sessionInfo.dashboardRole === "organizer") {
@@ -79,7 +83,7 @@ export async function requireSessionWithId(
 
 export async function logNamedTargetAction(
   session: SessionWithUser,
-  action: string,
+  action: AuditAction,
   targetId: string,
   targetName: string,
 ) {

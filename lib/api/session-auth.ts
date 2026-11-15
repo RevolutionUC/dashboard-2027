@@ -1,11 +1,14 @@
-import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getAccessInfo } from "@/lib/auth";
 
+/** Requires a signed-in user whose access request was approved (or an admin). */
 export async function requireAuthenticatedSession() {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) {
+  const access = await getAccessInfo();
+  if (!access) {
     return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
   }
-  return { session } as const;
+  if (!access.isApproved) {
+    return { error: NextResponse.json({ error: "Access not approved" }, { status: 403 }) } as const;
+  }
+  return { session: access.session, access } as const;
 }

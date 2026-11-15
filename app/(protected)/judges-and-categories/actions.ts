@@ -1,11 +1,9 @@
 "use server";
 
-import { eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { assertAuthorization } from "@/lib/auth";
 import { withAuth } from "@/lib/action-wrapper";
-import { db } from "@/lib/db";
-import { assignments, categories, judgeGroups, judges } from "@/lib/db/schema";
+import { db, fetchAll, must } from "@/lib/db";
 
 export type CategoryType = "Sponsor" | "Inhouse" | "General" | "MLH";
 
@@ -19,7 +17,7 @@ export async function deleteCategoryAction(categoryId: string) {
   await assertAuthorization();
 
   try {
-    await db.delete(categories).where(eq(categories.id, categoryId));
+    must(await db.from("categories").delete().eq("id", categoryId));
     revalidatePath("/judges-and-categories");
     return { success: true };
   } catch (error) {
@@ -34,11 +32,13 @@ export async function deleteCategoryAction(categoryId: string) {
 
 export const createCategory = withAuth(
   async (data: CreateCategoryInput) => {
-    await db.insert(categories).values({
-      id: data.id,
-      name: data.name,
-      type: data.type,
-    });
+    must(
+      await db.from("categories").insert({
+        id: data.id,
+        name: data.name,
+        type: data.type,
+      }),
+    );
     return {};
   },
   "create category",
@@ -53,7 +53,7 @@ interface BulkCreateCategoryInput {
 
 export const createCategoriesBulk = withAuth(
   async (data: BulkCreateCategoryInput[]) => {
-    await db.insert(categories).values(data);
+    must(await db.from("categories").insert(data.map(({ id, name, type }) => ({ id, name, type }))));
     return { count: data.length };
   },
   "create categories",
@@ -69,14 +69,16 @@ interface UpdateCategoryInput {
 
 export const updateCategory = withAuth(
   async (data: UpdateCategoryInput) => {
-    await db
-      .update(categories)
-      .set({
-        id: data.newId ?? data.id,
-        name: data.name,
-        type: data.type,
-      })
-      .where(eq(categories.id, data.id));
+    must(
+      await db
+        .from("categories")
+        .update({
+          id: data.newId ?? data.id,
+          name: data.name,
+          type: data.type,
+        })
+        .eq("id", data.id),
+    );
     return { newId: data.newId || data.id };
   },
   "update category",
@@ -91,11 +93,13 @@ interface CreateJudgeInput {
 
 export const createJudge = withAuth(
   async (data: CreateJudgeInput) => {
-    await db.insert(judges).values({
-      name: data.name,
-      email: data.email,
-      categoryId: data.categoryId,
-    });
+    must(
+      await db.from("judges").insert({
+        name: data.name,
+        email: data.email,
+        category_id: data.categoryId,
+      }),
+    );
     return {};
   },
   "create judge",
@@ -110,7 +114,11 @@ interface BulkCreateJudgeInput {
 
 export const createJudgesBulk = withAuth(
   async (data: BulkCreateJudgeInput[]) => {
-    await db.insert(judges).values(data);
+    must(
+      await db
+        .from("judges")
+        .insert(data.map((j) => ({ name: j.name, email: j.email, category_id: j.categoryId }))),
+    );
     return { count: data.length };
   },
   "create judges",
@@ -133,10 +141,7 @@ export async function updateJudgeAction(
   }
 
   try {
-    await db
-      .update(judges)
-      .set({ name, email, categoryId })
-      .where(eq(judges.id, id));
+    must(await db.from("judges").update({ name, email, category_id: categoryId }).eq("id", id));
 
     revalidatePath("/judges-and-categories");
     return { success: true };
@@ -153,7 +158,7 @@ export async function deleteJudgeAction(judgeId: string) {
   await assertAuthorization();
 
   try {
-    await db.delete(judges).where(eq(judges.id, judgeId));
+    must(await db.from("judges").delete().eq("id", judgeId));
     revalidatePath("/judges-and-categories");
     return { success: true };
   } catch (error) {
@@ -170,19 +175,15 @@ export async function toggleJudgeCheckinAction(judgeId: string) {
   await assertAuthorization();
 
   try {
-    const [judge] = await db
-      .select({ isCheckedin: judges.isCheckedin })
-      .from(judges)
-      .where(eq(judges.id, judgeId));
+    const judge = must(
+      await db.from("judges").select("isCheckedin:is_checkedin").eq("id", judgeId).maybeSingle(),
+    );
 
     if (!judge) {
       return { success: false, error: "Judge not found" };
     }
 
-    await db
-      .update(judges)
-      .set({ isCheckedin: !judge.isCheckedin })
-      .where(eq(judges.id, judgeId));
+    must(await db.from("judges").update({ is_checkedin: !judge.isCheckedin }).eq("id", judgeId));
 
     revalidatePath("/judges-and-categories");
     return { success: true };
@@ -200,9 +201,7 @@ export async function deleteAbsentJudgesAction() {
   await assertAuthorization();
 
   try {
-    const result = await db
-      .delete(judges)
-      .where(eq(judges.isCheckedin, false));
+    must(await db.from("judges").delete().eq("is_checkedin", false));
 
     revalidatePath("/judges-and-categories");
     return { success: true };
@@ -238,25 +237,14 @@ export async function assignJudgesToGroups() {
   try {
     await assertAuthorization();
 
-    const allJudges = await db
-      .select({
-        id: judges.id,
-        name: judges.name,
-        email: judges.email,
-        categoryId: judges.categoryId,
-        category: {
-          id: categories.id,
-          name: categories.name,
-          type: categories.type,
-        },
-      })
-      .from(judges)
-      .innerJoin(categories, eq(judges.categoryId, categories.id));
+    const allJudges: JudgeWithCategory[] = await fetchAll(() =>
+      db
+        .from("judges")
+        .select("id,name,email,categoryId:category_id,category:categories!inner(id,name,type)")
+        .order("id"),
+    );
 
-    const allCategories = await db
-      .select({ id: categories.id })
-      .from(categories)
-      .orderBy(categories.id);
+    const allCategories = must(await db.from("categories").select("id").order("id"));
 
     // Group judges by category
     const judgesByCategories = allJudges.reduce(
@@ -314,33 +302,16 @@ export async function assignJudgesToGroups() {
       group.name = `${firstChar}${secondChar}`;
     }
 
-    await db.transaction(async (tx) => {
-      await tx.delete(judgeGroups);
-
-      const groupValues = judgeGroupsToCreate.map((g) => ({
-        name: g.name,
-        categoryId: g.categoryId,
-      }));
-
-      const createdGroups = await tx
-        .insert(judgeGroups)
-        .values(groupValues)
-        .returning({ id: judgeGroups.id, name: judgeGroups.name });
-
-      const createdGroupsByName = new Map(createdGroups.map((g) => [g.name, g.id]));
-
-      // After inserting judge group, we assign the created judgeGroupId back to the correct individual judges
-      for (const group of judgeGroupsToCreate) {
-        const createdGroupId = createdGroupsByName.get(group.name);
-        if (!createdGroupId) continue;
-
-        const membersOfThisGroup = group.members.map((j) => j.id);
-        await tx
-          .update(judges)
-          .set({ judgeGroupId: createdGroupId })
-          .where(inArray(judges.id, membersOfThisGroup));
-      }
-    });
+    // Atomically replace judge groups and assign members (see replace_judge_groups in supabase/migrations)
+    must(
+      await db.rpc("replace_judge_groups", {
+        p_groups: judgeGroupsToCreate.map((g) => ({
+          name: g.name,
+          category_id: g.categoryId,
+          judge_ids: g.members.map((j) => j.id),
+        })),
+      }),
+    );
 
     revalidatePath("/judges-and-categories");
     return {
@@ -366,19 +337,15 @@ interface TransferJudgeInput {
 
 export const transferJudgeToGroup = withAuth(
   async (data: TransferJudgeInput) => {
-    const [judge] = await db
-      .select({ judgeGroupId: judges.judgeGroupId })
-      .from(judges)
-      .where(eq(judges.id, data.judgeId));
+    const judge = must(
+      await db.from("judges").select("judgeGroupId:judge_group_id").eq("id", data.judgeId).maybeSingle(),
+    );
 
     if (!judge || !judge.judgeGroupId) {
       return { success: false, error: "Judge is not assigned to a group" };
     }
 
-    const existingAssignments = await db
-      .select()
-      .from(assignments)
-      .limit(1);
+    const existingAssignments = must(await db.from("assignments").select("project_id").limit(1));
 
     if (existingAssignments.length > 0) {
       return {
@@ -387,10 +354,7 @@ export const transferJudgeToGroup = withAuth(
       };
     }
 
-    await db
-      .update(judges)
-      .set({ judgeGroupId: data.targetGroupId })
-      .where(eq(judges.id, data.judgeId));
+    must(await db.from("judges").update({ judge_group_id: data.targetGroupId }).eq("id", data.judgeId));
 
     revalidatePath("/judges-and-categories");
     return { success: true };

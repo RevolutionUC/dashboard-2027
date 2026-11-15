@@ -1,21 +1,16 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
-import { headers } from "next/headers";
 
-import { auth } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { participants } from "@/lib/db/schema";
+import { requireAuthenticatedSession } from "@/lib/api/session-auth";
+import { db, must, now } from "@/lib/db";
 import { isParticipantStatus } from "@/lib/participant-status";
 import { logAction } from "@/lib/audit";
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ user_id: string }> }) {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
-
-  if (!session) {
-    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  const auth = await requireAuthenticatedSession();
+  if (auth.error) {
+    return auth.error;
   }
+  const { session } = auth;
 
   const { user_id } = await params;
 
@@ -31,15 +26,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ user_i
     return NextResponse.json({ message: "Invalid status" }, { status: 400 });
   }
   // Fetch the current status before updating so we can log the transition
-  const [current] = await db
-    .select({
-      status: participants.status,
-      firstName: participants.firstName,
-      lastName: participants.lastName,
-    })
-    .from(participants)
-    .where(eq(participants.user_id, user_id))
-    .limit(1);
+  const current = must(
+    await db
+      .from("participants")
+      .select("status,firstName:first_name,lastName:last_name")
+      .eq("user_id", user_id)
+      .maybeSingle(),
+  );
 
   if (!current) {
     return NextResponse.json(
@@ -51,16 +44,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ user_i
   const previousStatus = current.status;
 
   const checkedIn = nextStatus === "CHECKED_IN";
-  const updated = await db
-    .update(participants)
-    .set({
-      status: nextStatus,
-      checkedIn,
-      updatedAt: new Date(),
-    })
-    .where(eq(participants.user_id, user_id))
-    .returning({ user_id: participants.user_id })
-    .then((r) => r[0]);
+  const updated = must(
+    await db
+      .from("participants")
+      .update({
+        status: nextStatus,
+        checked_in: checkedIn,
+        updated_at: now(),
+      })
+      .eq("user_id", user_id)
+      .select("user_id")
+      .maybeSingle(),
+  );
 
   if (!updated) {
     return NextResponse.json(

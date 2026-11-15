@@ -1,17 +1,8 @@
 "use server";
 
-import { count, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { assertAuthorization } from "@/lib/auth";
-import { db } from "@/lib/db";
-import {
-  assignments,
-  categories,
-  evaluations,
-  judgeGroups,
-  judges,
-  submissions,
-} from "@/lib/db/schema";
+import { db, fetchAll, must } from "@/lib/db";
 import { RotatingQueue } from "@/lib/rotating-queue";
 import { MinHeap } from "@/lib/min-heap";
 
@@ -39,21 +30,22 @@ export async function assignProjectsToJudgeGroups(
     await assertAuthorization();
 
     // Find General category ID
-    const generalCategory = await db
-      .select({ id: categories.id })
-      .from(categories)
-      .where(eq(categories.type, "General"))
-      .limit(1);
+    const generalCategory = must(
+      await db.from("categories").select("id").eq("type", "General").limit(1),
+    );
 
     let generalCategoryId: string;
 
     if (generalCategory.length === 0) {
       // Create the General category if not exists yet
-      const newGeneralCategory = await db
-        .insert(categories)
-        .values({ id: "general", name: "General", type: "General" })
-        .returning({ id: categories.id });
-      generalCategoryId = newGeneralCategory[0].id;
+      const newGeneralCategory = must(
+        await db
+          .from("categories")
+          .insert({ id: "general", name: "General", type: "General" })
+          .select("id")
+          .single(),
+      );
+      generalCategoryId = newGeneralCategory.id;
     } else {
       generalCategoryId = generalCategory[0].id;
     }
@@ -72,27 +64,30 @@ export async function assignProjectsToJudgeGroups(
     // }
 
     // Fetch all submissions with category info
-    const allSubmissions = await db
-      .select({
-        projectId: submissions.projectId,
-        categoryId: submissions.categoryId,
-        categoryType: categories.type,
-      })
-      .from(submissions)
-      .innerJoin(categories, eq(submissions.categoryId, categories.id));
+    const allSubmissions = (
+      await fetchAll(() =>
+        db
+          .from("submissions")
+          .select("projectId:project_id,categoryId:category_id,category:categories!inner(type)")
+          .order("project_id")
+          .order("category_id"),
+      )
+    ).map(({ category, ...s }) => ({ ...s, categoryType: category.type }));
 
-    // Fetch all judge groups with judge counts and category type
-    const judgeGroupsWithCounts = await db
-      .select({
-        id: judgeGroups.id,
-        categoryId: judgeGroups.categoryId,
-        categoryType: categories.type,
-        judgeCount: count(judges.id),
-      })
-      .from(judgeGroups)
-      .innerJoin(categories, eq(judgeGroups.categoryId, categories.id))
-      .leftJoin(judges, eq(judgeGroups.id, judges.judgeGroupId))
-      .groupBy(judgeGroups.id, judgeGroups.categoryId, categories.type);
+    // Fetch all judge groups with their judges and category type
+    const allJudgeGroups = await fetchAll(() =>
+      db
+        .from("judge_groups")
+        .select("id,categoryId:category_id,category:categories!inner(type),judges(id)")
+        .order("id"),
+    );
+
+    const judgeGroupsWithCounts: JudgeGroupWithCount[] = allJudgeGroups.map((g) => ({
+      id: g.id,
+      categoryId: g.categoryId,
+      categoryType: g.category.type,
+      judgeCount: g.judges.length,
+    }));
 
     if (judgeGroupsWithCounts.length === 0) {
       return {
@@ -295,8 +290,6 @@ export async function assignProjectsToJudgeGroups(
     );
 
     // Also Create evaluation records for each judge-project pair
-    const allJudgeGroups = await db.query.judgeGroups.findMany({ with: { judges: true } });
-
     const judgesByGroupId = new Map(allJudgeGroups.map(g => [g.id, g.judges]));
 
     // Create evaluation records: From `assignments`, each (judgeId, projectId) pair is a unique evaluation
@@ -304,20 +297,22 @@ export async function assignProjectsToJudgeGroups(
       const judges = judgesByGroupId.get(assignment.judgeGroupId) || [];
 
       return judges.map((judge) => ({
-        projectId: assignment.projectId,
-        judgeId: judge.id,
-        categoryId: assignment.submissionCategoryId,
+        project_id: assignment.projectId,
+        judge_id: judge.id,
+        category_id: assignment.submissionCategoryId,
       }));
     });
 
-    await db.transaction(async (tx) => {
-      await tx.delete(assignments);
-      await tx.insert(assignments).values(assignmentsToInsert);
-      await tx.delete(evaluations);
-      if (evaluationsToInsert.length > 0) {
-        await tx.insert(evaluations).values(evaluationsToInsert);
-      }
-    });
+    // Atomically replace assignments and evaluations (see replace_assignments in supabase/migrations)
+    must(
+      await db.rpc("replace_assignments", {
+        p_assignments: assignmentsToInsert.map((a) => ({
+          project_id: a.projectId,
+          judge_group_id: a.judgeGroupId,
+        })),
+        p_evaluations: evaluationsToInsert,
+      }),
+    );
 
     revalidatePath("/assignments");
 
@@ -343,10 +338,7 @@ export async function clearAllAssignmentsAction() {
   try {
     await assertAuthorization();
 
-    await db.transaction(async (tx) => {
-      await tx.delete(evaluations);
-      await tx.delete(assignments);
-    });
+    must(await db.rpc("clear_assignments"));
 
     revalidatePath("/assignments");
     return { success: true };

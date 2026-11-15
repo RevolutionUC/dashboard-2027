@@ -1,14 +1,16 @@
-import { db } from "@/lib/db";
-import { participants, events, eventRegistrations } from "@/lib/db/schema";
-import { auth } from "@/lib/auth";
-import { eq, and } from "drizzle-orm";
-import { headers } from "next/headers";
+import { db, must, now } from "@/lib/db";
+import { requireAuthenticatedSession } from "@/lib/api/session-auth";
 import { NextRequest, NextResponse } from "next/server";
 import { logAction } from "@/lib/audit";
 import { getParticipantByUserId } from "@/lib/api/qr-participant";
 
 // GET /api/qr - Get participant info or events list
 export async function GET(request: NextRequest) {
+  const auth = await requireAuthenticatedSession();
+  if (auth.error) {
+    return auth.error;
+  }
+
   const { searchParams } = new URL(request.url);
   const user_id = searchParams.get("id");
   const action = searchParams.get("action");
@@ -16,15 +18,9 @@ export async function GET(request: NextRequest) {
   try {
     // Fetch events list
     if (action === "events") {
-      const eventsList = await db
-        .select({
-          id: events.id,
-          name: events.name,
-          description: events.description,
-          eventType: events.eventType,
-          location: events.location,
-        })
-        .from(events);
+      const eventsList = must(
+        await db.from("events").select("id,name,description,eventType:event_type,location"),
+      );
 
       return NextResponse.json({
         workshops: eventsList.filter((e) => e.eventType === "WORKSHOP"),
@@ -41,7 +37,7 @@ export async function GET(request: NextRequest) {
     }
 
     const participantLookup = await getParticipantByUserId(user_id);
-    if ("error" in participantLookup) {
+    if (participantLookup.error) {
       return participantLookup.error;
     }
     const { participant } = participantLookup;
@@ -57,13 +53,11 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     // Check authentication
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
-
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const auth = await requireAuthenticatedSession();
+    if (auth.error) {
+      return auth.error;
     }
+    const { session } = auth;
 
     const { user_id, mode, eventId } = await request.json();
 
@@ -76,7 +70,7 @@ export async function POST(request: NextRequest) {
 
     // Find participant
     const participantLookup = await getParticipantByUserId(user_id);
-    if ("error" in participantLookup) {
+    if (participantLookup.error) {
       return participantLookup.error;
     }
     const { participant } = participantLookup;
@@ -90,10 +84,12 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      await db
-        .update(participants)
-        .set({ checkedIn: true, status: "CHECKED_IN", updatedAt: new Date() })
-        .where(eq(participants.user_id, user_id));
+      must(
+        await db
+          .from("participants")
+          .update({ checked_in: true, status: "CHECKED_IN", updated_at: now() })
+          .eq("user_id", user_id),
+      );
 
       await logAction({
         userId: session.user.id,
@@ -136,27 +132,24 @@ export async function POST(request: NextRequest) {
       }
 
       // Check event exists
-      const [event] = await db
-        .select()
-        .from(events)
-        .where(eq(events.id, eventId))
-        .limit(1);
+      const event = must(
+        await db.from("events").select("id,name,capacity").eq("id", eventId).maybeSingle(),
+      );
 
       if (!event) {
         return NextResponse.json({ error: "Event not found" }, { status: 404 });
       }
 
       // Check if already registered
-      const [existing] = await db
-        .select()
-        .from(eventRegistrations)
-        .where(
-          and(
-            eq(eventRegistrations.participant_id, user_id),
-            eq(eventRegistrations.eventId, eventId),
-          ),
-        )
-        .limit(1);
+      const existing = must(
+        await db
+          .from("event_registrations")
+          .select("id")
+          .eq("participant_id", user_id)
+          .eq("event_id", eventId)
+          .limit(1)
+          .maybeSingle(),
+      );
 
       if (existing) {
         return NextResponse.json(
@@ -167,20 +160,23 @@ export async function POST(request: NextRequest) {
 
       // Check capacity
       if (event.capacity) {
-        const registrations = await db
-          .select()
-          .from(eventRegistrations)
-          .where(eq(eventRegistrations.eventId, eventId));
+        const { count, error } = await db
+          .from("event_registrations")
+          .select("*", { count: "exact", head: true })
+          .eq("event_id", eventId);
+        if (error) throw error;
 
-        if (registrations.length >= event.capacity) {
+        if ((count ?? 0) >= event.capacity) {
           return NextResponse.json({ error: "Event is full" }, { status: 409 });
         }
       }
 
       // Register
-      await db
-        .insert(eventRegistrations)
-        .values({ participant_id: user_id, eventId });
+      must(
+        await db
+          .from("event_registrations")
+          .insert({ participant_id: user_id, event_id: eventId }),
+      );
 
       await logAction({
         userId: session.user.id,

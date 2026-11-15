@@ -4,14 +4,14 @@ Thanks for helping improve the RevolutionUC dashboard.
 
 ## Development Setup
 
-- Prereqs: Node.js (recommended: 20 LTS), npm, and a Postgres database.
+- Prereqs: Node.js (recommended: 20 LTS), npm, and a Supabase project.
 - Install dependencies: `npm install`
 - Environment:
   - Copy `.env.example` to `.env`
   - Fill in required values (at minimum):
-    - `DATABASE_URL`
-    - `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`
-    - `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`
+    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (Supabase Auth, email + password)
+    - `SUPABASE_SECRET_KEY` (server-only; used for all database queries)
+    - `DATABASE_URL` (only needed to apply migrations)
 - Run locally: `npm run dev`
 
 ## Before You Push (Required)
@@ -34,53 +34,52 @@ npm run lint
 npm run format
 ```
 
-## Database Changes (Drizzle)
+## Database Changes (Supabase)
 
-Schema: `lib/db/schema.ts`
+All queries use `supabase-js` on the server (`db` from `lib/db`, which uses the secret key).
+The schema lives in SQL migrations under `supabase/migrations/`.
 
 ```bash
-# Generate migrations
-npm exec drizzle-kit generate
+# Create a new migration file, then write the SQL in it
+npx supabase migration new <name>
 
-# Apply migrations
-npm exec drizzle-kit migrate
+# Apply pending migrations
+npm run db:push
 ```
 
-`DATABASE_URL` is required for migration commands.
+`DATABASE_URL` is required for `db:push`.
+
+After changing the schema, update `lib/db/types.ts` to match (or regenerate it with
+`npx supabase gen types typescript --project-id <project-ref> > lib/db/types.ts`).
 
 ### Migrations Workflow (Required)
 
-- Commit the `drizzle/` folder in every PR that changes `lib/db/schema.ts`.
-- Do not use `drizzle-kit push` on production databases.
+- Commit the new file in `supabase/migrations/` in every PR that changes the schema.
+- Keep row-level security enabled on every new table (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY;`).
+  The app only reads and writes through the server with the secret key, so tables need no policies.
+- Operations that must be atomic go in a Postgres function called with `db.rpc()`.
 - Always run migrations on staging first when possible.
 
-### Baseline Existing Databases (One-Time)
+## Roles (Supabase RBAC)
 
-If a database already has tables and enums before migrations are committed, baseline it once so Drizzle does not try to recreate existing objects:
+Roles (`admin`, `lead`, `organizer`) are never hard-coded. They live in `public.user_roles`, and the
+Custom Access Token Hook (`public.custom_access_token_hook`) adds the role to each user's JWT as the
+`user_role` claim. The server reads that verified claim (`getAccessInfo` in `lib/auth.ts`).
+No row in `user_roles` means the user is not approved.
 
-1. Create the migrations table:
+- Enable the hook once per project: Supabase dashboard → Authentication → Hooks →
+  Customize Access Token (JWT) Claims → `public.custom_access_token_hook`.
+- Admins grant/change/remove roles on **Admin → Approvals**.
+- Bootstrap the first admin in the SQL Editor (after they've signed up):
 
-```sql
-CREATE SCHEMA IF NOT EXISTS drizzle;
-CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations (
-  id SERIAL PRIMARY KEY,
-  hash text NOT NULL,
-  created_at bigint
-);
-```
+  ```sql
+  insert into public.user_roles (user_id, role)
+  select id, 'admin' from auth.users where email = 'someone@example.com'
+  on conflict (user_id) do update set role = excluded.role, updated_at = now();
+  ```
 
-2. Insert the latest migration tag from `drizzle/meta/_journal.json`:
-
-```sql
-INSERT INTO drizzle.__drizzle_migrations (hash, created_at)
-VALUES ('<latest-tag>', <latest-when>);
-```
-
-After baselining, run:
-
-```bash
-npm exec drizzle-kit migrate
-```
+- Role changes apply when the user's access token refreshes (at most the JWT expiry,
+  configurable in Authentication → Sessions). The pending-approval page refreshes immediately.
 
 ## Branch + Rebase Workflow
 

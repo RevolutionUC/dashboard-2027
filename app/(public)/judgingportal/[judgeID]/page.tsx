@@ -1,9 +1,4 @@
-import { eq } from "drizzle-orm";
-import { db } from "@/lib/db";
-import {
-  evaluations,
-  projects,
-} from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
 import { getJudgeContext } from "./lib";
 import { ScoringInterface } from "./scoring-interface";
 
@@ -17,23 +12,23 @@ export default async function JudgingPortalPage({
     await getJudgeContext(judgeID);
 
   // Load evaluations for this judge with project details
-  const evaluationRows = await db
-    .select({
-      projectId: evaluations.projectId,
-      categoryId: evaluations.categoryId,
-      projectName: projects.name,
-      projectLocation: projects.location,
-      projectLocation2: projects.location2,
-      projectUrl: projects.url,
-      projectStatus: projects.status,
-      scores: evaluations.scores,
-      categoryRelevance: evaluations.categoryRelevance,
-      note: evaluations.note,
-    })
-    .from(evaluations)
-    .innerJoin(projects, eq(evaluations.projectId, projects.id))
-    .where(eq(evaluations.judgeId, judgeID))
-    .orderBy(projects.name);
+  const evaluationRows = must(
+    await db
+      .from("evaluations")
+      .select(
+        "projectId:project_id,categoryId:category_id,scores,categoryRelevance:category_relevance,note,project:projects!inner(name,location,location2,url,status)",
+      )
+      .eq("judge_id", judgeID),
+  )
+    .map(({ project, ...row }) => ({
+      ...row,
+      projectName: project.name,
+      projectLocation: project.location,
+      projectLocation2: project.location2,
+      projectUrl: project.url,
+      projectStatus: project.status,
+    }))
+    .sort((a, b) => a.projectName.localeCompare(b.projectName));
 
   const assignedEvaluations = evaluationRows.map((row) => ({
     ...row,

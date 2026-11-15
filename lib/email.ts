@@ -26,7 +26,7 @@ interface EmailOptions {
 async function sendEmail(
   options: EmailOptions,
 ): Promise<{ success: boolean; error?: string }> {
-  if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+  if (!mg || !process.env.MAILGUN_DOMAIN) {
     console.error(
       "Mailgun configuration missing. Set MAILGUN_API_KEY and MAILGUN_DOMAIN environment variables.",
     );

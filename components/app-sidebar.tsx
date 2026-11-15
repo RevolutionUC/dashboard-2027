@@ -18,6 +18,7 @@ import {
   TrendingUp,
   Trophy,
   ChartLine,
+  ChartColumn,
 } from "lucide-react";
 import { type ComponentType, useEffect, useState } from "react";
 import {
@@ -62,6 +63,11 @@ const items = [
     title: "Suggestions & Tasks",
     url: "/recommendations",
     icon: Lightbulb,
+  },
+  {
+    title: "Registration Stats",
+    url: "/stats",
+    icon: ChartColumn,
   },
   {
     title: "Emails",

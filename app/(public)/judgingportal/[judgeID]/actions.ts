@@ -1,9 +1,8 @@
 "use server";
 
-import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
-import { db } from "@/lib/db";
-import { evaluations, judges } from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
+import type { TablesUpdate } from "@/lib/db/types";
 
 async function runMutation(
   operation: () => Promise<void>,
@@ -27,21 +26,15 @@ async function runMutation(
 async function updateEvaluationAndRevalidate(
   judgeId: string,
   projectId: string,
-  patch: Partial<typeof evaluations.$inferInsert>,
+  patch: TablesUpdate<"evaluations">,
   logPrefix: string,
   errorMessage: string,
 ) {
   return runMutation(
     async () => {
-      await db
-        .update(evaluations)
-        .set(patch)
-        .where(
-          and(
-            eq(evaluations.judgeId, judgeId),
-            eq(evaluations.projectId, projectId),
-          ),
-        );
+      must(
+        await db.from("evaluations").update(patch).eq("judge_id", judgeId).eq("project_id", projectId),
+      );
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}`);
@@ -58,15 +51,13 @@ export async function saveRanking(
 ) {
   return runMutation(
     async () => {
-      await db
-        .update(evaluations)
-        .set({ categoryBordaScore: bordaScore })
-        .where(
-          and(
-            eq(evaluations.judgeId, judgeId),
-            eq(evaluations.projectId, projectId),
-          ),
-        );
+      must(
+        await db
+          .from("evaluations")
+          .update({ category_borda_score: bordaScore })
+          .eq("judge_id", judgeId)
+          .eq("project_id", projectId),
+      );
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}/ranking`);
@@ -79,10 +70,7 @@ export async function saveRanking(
 export async function resetAllRankings(judgeId: string) {
   return runMutation(
     async () => {
-      await db
-        .update(evaluations)
-        .set({ categoryBordaScore: 0 })
-        .where(eq(evaluations.judgeId, judgeId));
+      must(await db.from("evaluations").update({ category_borda_score: 0 }).eq("judge_id", judgeId));
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}/ranking`);
@@ -95,10 +83,7 @@ export async function resetAllRankings(judgeId: string) {
 export async function finalizeRankings(judgeId: string) {
   return runMutation(
     async () => {
-      await db
-        .update(judges)
-        .set({ judgingPhase: "finalized" })
-        .where(eq(judges.id, judgeId));
+      must(await db.from("judges").update({ judging_phase: "finalized" }).eq("id", judgeId));
     },
     () => {
       revalidatePath(`/judgingportal/${judgeId}`);
@@ -121,18 +106,17 @@ export async function saveEvaluationScore(
 
   try {
     // Get existing evaluation
-    const existingEval = await db
-      .select({ scores: evaluations.scores })
-      .from(evaluations)
-      .where(
-        and(
-          eq(evaluations.judgeId, judgeId),
-          eq(evaluations.projectId, projectId),
-        ),
-      )
-      .limit(1);
+    const existingEval = must(
+      await db
+        .from("evaluations")
+        .select("scores")
+        .eq("judge_id", judgeId)
+        .eq("project_id", projectId)
+        .limit(1)
+        .maybeSingle(),
+    );
 
-    if (existingEval.length === 0) {
+    if (!existingEval) {
       return {
         success: false,
         error: "Evaluation record not found",
@@ -140,20 +124,18 @@ export async function saveEvaluationScore(
     }
 
     // Get current scores or initialize with nulls
-    const currentScores = existingEval[0].scores || [null, null, null];
+    const currentScores: (number | null)[] = existingEval.scores || [null, null, null];
     const newScores = [...currentScores];
     newScores[scoreIndex] = score;
 
     // Update the evaluation
-    await db
-      .update(evaluations)
-      .set({ scores: newScores as number[] })
-      .where(
-        and(
-          eq(evaluations.judgeId, judgeId),
-          eq(evaluations.projectId, projectId),
-        ),
-      );
+    must(
+      await db
+        .from("evaluations")
+        .update({ scores: newScores as number[] })
+        .eq("judge_id", judgeId)
+        .eq("project_id", projectId),
+    );
 
     revalidatePath(`/judgingportal/${judgeId}`);
 
@@ -184,7 +166,7 @@ export async function saveCategoryRelevance(
   return updateEvaluationAndRevalidate(
     judgeId,
     projectId,
-    { categoryRelevance: relevance },
+    { category_relevance: relevance },
     "Error saving category relevance:",
     "Failed to save category relevance",
   );

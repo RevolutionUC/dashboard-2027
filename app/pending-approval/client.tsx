@@ -1,7 +1,9 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import { refreshAccess } from "@/app/auth/actions";
 import { authClient } from "@/lib/auth-client";
 
 interface PendingApprovalClientProps {
@@ -21,6 +23,28 @@ export function PendingApprovalClient({
 }: PendingApprovalClientProps) {
   const [isRequesting, setIsRequesting] = useState(false);
   const [requestSent, setRequestSent] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
+  const router = useRouter();
+
+  // Approval grants a role in Supabase RBAC; a fresh token is needed to see it.
+  const checkAccess = useCallback(async () => {
+    setIsChecking(true);
+    try {
+      const { approved } = await refreshAccess();
+      if (approved) {
+        router.push("/dashboard");
+        router.refresh();
+        return;
+      }
+    } catch (error) {
+      console.error("Failed to check access:", error);
+    }
+    setIsChecking(false);
+  }, [router]);
+
+  useEffect(() => {
+    checkAccess();
+  }, [checkAccess]);
 
   const handleRequestAgain = async () => {
     setIsRequesting(true);
@@ -102,17 +126,20 @@ export function PendingApprovalClient({
           </div>
         )}
 
+        {!isDenied && (
+          <button
+            type="button"
+            onClick={checkAccess}
+            disabled={isChecking}
+            className="w-full bg-primary text-primary-foreground rounded-lg font-medium text-sm h-10 px-4 cursor-pointer hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isChecking ? "Checking..." : "Check again"}
+          </button>
+        )}
+
         <button
           type="button"
-          onClick={() =>
-            authClient.signOut({
-              fetchOptions: {
-                onSuccess: () => {
-                  window.location.href = "/sign-in";
-                },
-              },
-            })
-          }
+          onClick={() => authClient.signOut()}
           className="w-full bg-secondary text-secondary-foreground rounded-lg font-medium text-sm h-10 px-4 cursor-pointer hover:bg-secondary/80 transition-colors"
         >
           Sign Out

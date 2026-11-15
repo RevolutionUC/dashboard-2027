@@ -1,10 +1,5 @@
-import { eq, ne, and } from "drizzle-orm";
 import { redirect } from "next/navigation";
-import { db } from "@/lib/db";
-import {
-  evaluations,
-  projects,
-} from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
 import type { EvaluationWithScore } from "../../types";
 import { getJudgeContext } from "../lib";
 import { RankingInterface } from "./ranking-interface";
@@ -22,19 +17,20 @@ export default async function RankingPage({
     redirect("/judgingportal/finished");
   }
 
-  const evaluationRows = await db
-    .select({
-      projectId: evaluations.projectId,
-      projectName: projects.name,
-      projectLocation: projects.location,
-      projectLocation2: projects.location2,
-      scores: evaluations.scores,
-      categoryRelevance: evaluations.categoryRelevance,
-      categoryBordaScore: evaluations.categoryBordaScore,
-    })
-    .from(evaluations)
-    .innerJoin(projects, eq(evaluations.projectId, projects.id))
-    .where(and(eq(evaluations.judgeId, judgeID), ne(evaluations.categoryId, 'general')));
+  const evaluationRows = must(
+    await db
+      .from("evaluations")
+      .select(
+        "projectId:project_id,scores,categoryRelevance:category_relevance,categoryBordaScore:category_borda_score,project:projects!inner(name,location,location2)",
+      )
+      .eq("judge_id", judgeID)
+      .neq("category_id", "general"),
+  ).map(({ project, ...row }) => ({
+    ...row,
+    projectName: project.name,
+    projectLocation: project.location,
+    projectLocation2: project.location2,
+  }));
 
   const evaluationsWithScores: EvaluationWithScore[] = evaluationRows.map(
     (row) => {

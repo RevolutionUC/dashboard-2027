@@ -1,7 +1,5 @@
-import { ilike, or, sql } from "drizzle-orm";
 
-import { db } from "@/lib/db";
-import { participants } from "@/lib/db/schema";
+import { db, must, quoteFilterValue } from "@/lib/db";
 import { ParticipantsSearchBox } from "@/components/participants-search-box";
 import { ParticipantStatusMenu } from "@/components/participant-status-menu";
 import { isParticipantStatus } from "@/lib/participant-status";
@@ -33,47 +31,24 @@ export default async function Search({
   const q = (qRaw ?? "").trim();
   const offset = (page - 1) * PAGE_SIZE;
 
-  const whereClause =
-    q.length > 0
-      ? or(ilike(participants.firstName, `%${q}%`), ilike(participants.lastName, `%${q}%`))
-      : undefined;
+  let query = db
+    .from("participants")
+    .select(
+      "user_id,firstName:first_name,lastName:last_name,email,phone,age,gender,school,levelOfStudy:level_of_study,country,major,dietRestrictions:diet_restrictions,linkedinUrl:linkedin_url,githubUrl:github_url,resumeUrl:resume_url,shirtSize:shirt_size,hackathons,status,checkedIn:checked_in,createdAt:created_at",
+      { count: "exact" },
+    );
 
-  const [rows, totalRow] = await Promise.all([
-    db
-      .select({
-        user_id: participants.user_id,
-        firstName: participants.firstName,
-        lastName: participants.lastName,
-        email: participants.email,
-        phone: participants.phone,
-        age: participants.age,
-        gender: participants.gender,
-        school: participants.school,
-        // graduationYear: participants.graduationYear,
-        levelOfStudy: participants.levelOfStudy,
-        country: participants.country,
-        major: participants.major,
-        dietRestrictions: participants.dietRestrictions,
-        linkedinUrl: participants.linkedinUrl,
-        githubUrl: participants.githubUrl,
-        resumeUrl: participants.resumeUrl,
-        shirtSize: participants.shirtSize,
-        hackathons: participants.hackathons,
-        status: participants.status,
-        checkedIn: participants.checkedIn,
-        createdAt: participants.createdAt,
-      })
-      .from(participants)
-      .where(whereClause)
-      .orderBy(sql`${participants.createdAt} desc`)
-      .limit(PAGE_SIZE)
-      .offset(offset),
-    db
-      .select({ count: sql<number>`count(*)` })
-      .from(participants)
-      .where(whereClause)
-      .then((r) => r[0]?.count ?? 0),
-  ]);
+  if (q.length > 0) {
+    const pattern = quoteFilterValue(`%${q}%`);
+    query = query.or(`first_name.ilike.${pattern},last_name.ilike.${pattern}`);
+  }
+
+  const result = await query
+    .order("created_at", { ascending: false })
+    .range(offset, offset + PAGE_SIZE - 1);
+  // Requesting a page past the end returns an error (416) rather than an empty list
+  const rows = result.error?.code === "PGRST103" ? [] : must(result);
+  const totalRow = result.count ?? 0;
 
   const total = Number(totalRow) || 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));

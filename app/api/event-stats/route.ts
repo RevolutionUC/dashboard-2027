@@ -1,91 +1,57 @@
-import { db } from "@/lib/db";
-import { participants, events, eventRegistrations } from "@/lib/db/schema";
-import { eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { db, fetchAll, must } from "@/lib/db";
 import { requireAuthenticatedSession } from "@/lib/api/session-auth";
+
+type ParticipantSummary = { id: string; first_name: string; last_name: string; email: string };
+
+async function getEventsAndRegistrations(eventType: "WORKSHOP" | "FOOD") {
+  const eventsOfType = must(
+    await db.from("events").select("id,name,eventType:event_type").eq("event_type", eventType),
+  );
+
+  // Inner-join on events instead of a long `.in()` list of event IDs.
+  const rows = await fetchAll(() =>
+    db
+      .from("event_registrations")
+      .select(
+        "id,participant_id,event_id,registered_at,event:events!inner(event_type),participant:participants(id:user_id,first_name,last_name,email)",
+      )
+      .eq("event.event_type", eventType)
+      .order("id"),
+  );
+
+  return { eventsOfType, rows };
+}
 
 export async function GET() {
   const auth = await requireAuthenticatedSession();
-  if ("error" in auth) {
+  if (auth.error) {
     return auth.error;
   }
-  
+
   try {
-    const workshopEvents = await db
-      .select({
-        id: events.id,
-        name: events.name,
-        eventType: events.eventType,
-      })
-      .from(events)
-      .where(eq(events.eventType, 'WORKSHOP'));
-    
-    const foodEvents = await db
-      .select({
-        id: events.id,
-        name: events.name,
-        eventType: events.eventType,
-      })
-      .from(events)
-      .where(eq(events.eventType, 'FOOD'));
-    
-    const workshopEventIds = workshopEvents.map((e) => e.id);
-    const foodEventIds = foodEvents.map((e) => e.id);
-    
-    const [workshopRegistrations, foodRegistrations] = await Promise.all([
-      workshopEventIds.length === 0
-        ? []
-        : db
-            .select({
-              id: eventRegistrations.id,
-              participant_id: eventRegistrations.participant_id,
-              event_id: eventRegistrations.eventId,
-              registered_at: eventRegistrations.registeredAt,
-            })
-            .from(eventRegistrations)
-            .where(inArray(eventRegistrations.eventId, workshopEventIds)),
-      foodEventIds.length === 0
-        ? []
-        : db
-            .select({
-              id: eventRegistrations.id,
-              participant_id: eventRegistrations.participant_id,
-              event_id: eventRegistrations.eventId,
-              registered_at: eventRegistrations.registeredAt,
-            })
-            .from(eventRegistrations)
-            .where(inArray(eventRegistrations.eventId, foodEventIds)),
+    const [workshop, food] = await Promise.all([
+      getEventsAndRegistrations("WORKSHOP"),
+      getEventsAndRegistrations("FOOD"),
     ]);
 
-    
-    const participantIds = Array.from(
-      new Set(
-        [...workshopRegistrations, ...foodRegistrations]
-          .map((r) => r.participant_id)
-          .filter(Boolean)
-      )
-    );
-    
-    const participantRows = 
-      participantIds.length === 0
-        ? []
-        : await db
-          .select({
-            id: participants.user_id,
-            first_name: participants.firstName,
-            last_name: participants.lastName,
-            email: participants.email,
-          })
-          .from(participants)
-          .where(inArray(participants.user_id, participantIds))
-    
-    const participantMap = Object.fromEntries(
-      participantRows.map((p) => [p.id, p])
-    );
-    
+    const participantMap: Record<string, ParticipantSummary> = {};
+    const toRegistration = (r: (typeof workshop.rows)[number]) => {
+      if (r.participant) participantMap[r.participant.id] = r.participant;
+      return {
+        id: r.id,
+        participant_id: r.participant_id,
+        event_id: r.event_id,
+        registered_at: r.registered_at,
+      };
+    };
+
+    const workshopRegistrations = workshop.rows.map(toRegistration);
+    const foodRegistrations = food.rows.map(toRegistration);
+
     return NextResponse.json({
-      workshops: workshopEvents,
-      food: foodEvents,
+      workshops: workshop.eventsOfType,
+      food: food.eventsOfType,
       workshopRegistrations,
       foodRegistrations,
       participants: participantMap,
@@ -95,7 +61,7 @@ export async function GET() {
     console.error("GET /api/event-stats failed:", err);
     return NextResponse.json(
       { error: "Failed to fetch event stats" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

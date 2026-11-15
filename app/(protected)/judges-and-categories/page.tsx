@@ -1,4 +1,3 @@
-import { eq, sql } from "drizzle-orm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -8,8 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { db } from "@/lib/db";
-import { assignments, categories, judgeGroups, judges, submissions } from "@/lib/db/schema";
+import { db, fetchAll, must } from "@/lib/db";
 import { CategoryBadge } from "@/components/category-badge";
 import { AssignJudgesToGroupsButton } from "./assign-judges-button";
 import { EditCategoryModal } from "./edit-category-modal";
@@ -24,52 +22,52 @@ import { DeleteCategoryButton } from "./delete-category-button";
 import { DeleteJudgeButton } from "./delete-judge-button";
 
 export default async function JudgeAndCategoriesPage() {
-  const [allCategories, allJudges, allJudgeGroups, allAssignments] =
-    await Promise.all([
+  const [categoryRows, judgeRows, judgeGroupRows, allAssignments] = await Promise.all([
+    fetchAll(() =>
       db
-        .select({
-          id: categories.id,
-          name: categories.name,
-          type: categories.type,
-          judgeCount: sql<number>`count(distinct ${judges.id})`.mapWith(Number),
-          projectCount: sql<number>`count(distinct ${submissions.projectId})`.mapWith(Number),
-        })
-        .from(categories)
-        .leftJoin(judges, eq(judges.categoryId, categories.id))
-        .leftJoin(submissions, eq(submissions.categoryId, categories.id))
-        .groupBy(categories.id, categories.name, categories.type)
-        .orderBy(categories.name),
+        .from("categories")
+        .select("id,name,type,judges(id),submissions(project_id)")
+        .order("name")
+        .order("id"),
+    ),
+    fetchAll(() =>
       db
-        .select({
-          id: judges.id,
-          name: judges.name,
-          email: judges.email,
-          categoryId: judges.categoryId,
-          categoryName: categories.name,
-          categoryType: categories.type,
-          judgeGroupId: judges.judgeGroupId,
-          judgeGroupName: judgeGroups.name,
-          isCheckedin: judges.isCheckedin,
-          createdAt: judges.createdAt,
-        })
-        .from(judges)
-        .innerJoin(categories, eq(judges.categoryId, categories.id))
-        .leftJoin(judgeGroups, eq(judges.judgeGroupId, judgeGroups.id))
-        .orderBy(categories.id, judges.name),
+        .from("judges")
+        .select(
+          "id,name,email,categoryId:category_id,judgeGroupId:judge_group_id,isCheckedin:is_checkedin,createdAt:created_at,category:categories!inner(name,type),judgeGroup:judge_groups(name)",
+        )
+        .order("category_id")
+        .order("name")
+        .order("id"),
+    ),
+    fetchAll(() =>
       db
-        .select({
-          id: judgeGroups.id,
-          name: judgeGroups.name,
-          categoryId: judgeGroups.categoryId,
-          categoryName: categories.name,
-          categoryType: categories.type,
-        })
-        .from(judgeGroups)
-        .innerJoin(categories, eq(judgeGroups.categoryId, categories.id))
-        .orderBy(judgeGroups.name),
-      db.select({ projectId: assignments.projectId }).from(assignments).limit(1),
-    ]);
+        .from("judge_groups")
+        .select("id,name,categoryId:category_id,category:categories!inner(name,type)")
+        .order("name")
+        .order("id"),
+    ),
+    must(await db.from("assignments").select("projectId:project_id").limit(1)),
+  ]);
 
+  const allCategories = categoryRows.map(({ judges, submissions, ...category }) => ({
+    ...category,
+    judgeCount: judges.length,
+    projectCount: submissions.length,
+  }));
+
+  const allJudges = judgeRows.map(({ category, judgeGroup, ...judge }) => ({
+    ...judge,
+    categoryName: category.name,
+    categoryType: category.type,
+    judgeGroupName: judgeGroup?.name ?? null,
+  }));
+
+  const allJudgeGroups = judgeGroupRows.map(({ category, ...group }) => ({
+    ...group,
+    categoryName: category.name,
+    categoryType: category.type,
+  }));
 
   return (
     <main className="mx-auto w-full max-w-6xl p-6">

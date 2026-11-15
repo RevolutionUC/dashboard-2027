@@ -1,7 +1,6 @@
-import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { auditLogs } from "@/lib/db/schema";
+import { db, must } from "@/lib/db";
+import type { Enums } from "@/lib/db/types";
 import { withAdminSession } from "@/lib/api/admin-auth";
 
 // GET /api/admin/logs - Fetch audit logs with optional filters
@@ -14,33 +13,16 @@ export async function GET(request: Request) {
 
     try {
       let query = db
-        .select({
-          id: auditLogs.id,
-          session_id: auditLogs.session_id,
-          user_id: auditLogs.user_id,
-          name: auditLogs.name,
-          email: auditLogs.email,
-          action: auditLogs.action,
-          target_id: auditLogs.target_id,
-          details: auditLogs.details,
-          event_time: auditLogs.event_time,
-        })
-        .from(auditLogs)
-        .orderBy(desc(auditLogs.event_time))
-        .limit(limit)
-        .offset(offset)
-        .$dynamic();
+        .from("audit_log")
+        .select("id,session_id,user_id,name,email,action,target_id,details,event_time");
 
       if (actionFilter && actionFilter !== "all") {
-        query = query.where(
-          eq(
-            auditLogs.action,
-            actionFilter as typeof auditLogs.action.enumValues[number],
-          ),
-        );
+        query = query.eq("action", actionFilter as Enums<"actions">);
       }
 
-      const logs = await query;
+      const logs = must(
+        await query.order("event_time", { ascending: false }).range(offset, offset + limit - 1),
+      );
       return NextResponse.json(logs);
     } catch (error) {
       console.error("Error fetching audit logs:", error);
