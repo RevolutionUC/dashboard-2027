@@ -1,0 +1,10 @@
+#!/bin/sh
+dir=$(dirname "$0")
+bad=$(git diff --cached --name-only --diff-filter=ACMR | sh "$dir/env-guard.sh")
+if [ -n "$bad" ]; then
+  echo "COMMIT BLOCKED: env files are staged:" >&2
+  echo "$bad" | sed 's/^/  /' >&2
+  echo "Unstage with: git restore --staged <file>" >&2
+  exit 1
+fi
+exit 0
