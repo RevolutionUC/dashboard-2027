@@ -282,9 +282,13 @@ export async function POST(request: NextRequest) {
         }
 
         const seenEmails = new Set<string>();
+        let duplicateCount = 0;
         recipients = recipients.filter((email) => {
             const key = email.toLowerCase();
-            if (seenEmails.has(key)) return false;
+            if (seenEmails.has(key)) {
+                duplicateCount++;
+                return false;
+            }
             seenEmails.add(key);
             return true;
         });
@@ -328,12 +332,14 @@ export async function POST(request: NextRequest) {
             }
         }
 
+        const failedRecipients: { email: string; error: string }[] = [];
+
         // Validate email addresses
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         const invalidEmails = recipients.filter(
             (email) => !emailRegex.test(email),
         );
-        if (invalidEmails.length > 0) {
+        if (invalidEmails.length === recipients.length) {
             return NextResponse.json(
                 {
                     error: `Invalid email addresses: ${invalidEmails.join(", ")}`,
@@ -341,6 +347,14 @@ export async function POST(request: NextRequest) {
                 { status: 400 },
             );
         }
+        if (invalidEmails.length > 0) {
+            console.warn(`Skipping ${invalidEmails.length} invalid email address(es):`, invalidEmails);
+            failedRecipients.push(
+                ...invalidEmails.map((email) => ({ email, error: "Invalid email address" })),
+            );
+            recipients = recipients.filter((email) => emailRegex.test(email));
+        }
+        const requestedCount = recipients.length + invalidEmails.length;
 
         const emailSubject = template.subject;
         const isConfirmAttendance = templateId === CONFIRM_ATTENDANCE_ID;
@@ -456,7 +470,6 @@ export async function POST(request: NextRequest) {
             messageIds?: string[];
             error?: string;
         }[] = [];
-        const failedRecipients: { email: string; error: string }[] = [];
         // Set when Resend returns an account-level error (quota, API key) that
         // would fail every remaining batch; those batches are skipped, not sent.
         let stopReason: string | undefined;
@@ -559,24 +572,31 @@ export async function POST(request: NextRequest) {
             templateId,
             recipientType,
             status: recipientType === "status" ? status : undefined,
-            recipientCount: recipients.length,
+            recipientCount: requestedCount,
+            invalidCount: invalidEmails.length,
+            duplicateCount,
             sentBy: "authenticated-user",
             stopReason,
             results,
         });
 
         const failedCount = failedRecipients.length;
-        const successCount = recipients.length - failedCount;
+        const successCount = requestedCount - failedCount;
+        const duplicateNote =
+            duplicateCount > 0 ? ` (${duplicateCount} duplicate(s) skipped)` : "";
 
         return NextResponse.json({
             success: failedCount === 0,
             message:
                 failedCount === 0
-                    ? `Sent to ${recipients.length} recipient(s)`
-                    : `Sent to ${successCount} of ${recipients.length} recipient(s); ${failedCount} failed` +
+                    ? `Sent to ${requestedCount} recipient(s)${duplicateNote}`
+                    : `Sent to ${successCount} of ${requestedCount} recipient(s); ${failedCount} failed` +
+                      (invalidEmails.length > 0 ? ` (${invalidEmails.length} invalid address(es))` : "") +
+                      duplicateNote +
                       (stopReason ? `. Stopped early: ${stopReason}` : ""),
             results,
-            recipientCount: recipients.length,
+            recipientCount: requestedCount,
+            duplicateCount,
             successCount,
             failedCount,
             failedRecipients,
