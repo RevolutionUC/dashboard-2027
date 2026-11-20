@@ -10,6 +10,7 @@ import {
   Home,
   Inbox,
   QrCode,
+  Lightbulb,
   NotepadText,
   ScrollText,
   Search,
@@ -57,6 +58,11 @@ const items = [
     title: "Event Stats",
     url: "/event-stats",
     icon: ChartLine,
+  },
+  {
+    title: "Suggestions & Tasks",
+    url: "/recommendations",
+    icon: Lightbulb,
   },
   {
     title: "Registration Stats",

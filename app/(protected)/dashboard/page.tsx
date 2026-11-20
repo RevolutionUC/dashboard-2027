@@ -63,7 +63,6 @@ export default function DashboardPage() {
           {error && ` (error: ${error})`}
         </p>
       </div>
-
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card">
         <Card>
           <CardHeader>
