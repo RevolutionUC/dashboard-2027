@@ -454,18 +454,21 @@ function CapacityCard({ approved }: { approved: number }) {
 }
 
 function ResumeCard({ uploaded, total }: { uploaded: number; total: number }) {
-  const percent = total === 0 ? 0 : Math.round((uploaded / total) * 100);
+  const hasData = total > 0;
+  const percent = hasData ? Math.min(100, Math.round((uploaded / total) * 100)) : 0;
 
   return (
     <ProgressCard
       title="Resumes"
       leftLabel="Uploaded"
-      leftValue={`${percent}%`}
+      leftValue={hasData ? `${percent}%` : "-"}
       rightLabel="No resume"
-      rightValue={`${100 - percent}%`}
+      rightValue={hasData ? `${100 - percent}%` : "-"}
       percent={percent}
       caption={`${uploaded} of ${total} registrants uploaded a resume`}
-      warning={uploaded > total ? "Check: more resumes than registrations." : undefined}
+      warning={
+        uploaded > total ? "Check: more resumes than registrations." : undefined
+      }
     />
   );
 }
@@ -510,12 +513,19 @@ export default function StatsPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isLive, setIsLive] = useState(false);
+  const sourceNote = isLive
+    ? "Source: registration form (live)"
+    : "Source: registration form (placeholder)";
 
   async function refresh() {
     setIsRefreshing(true);
     setError(null);
     try {
-      setStats(FAKE_STATS);
+      const res = await fetch("/api/stats");
+      if (!res.ok) throw new Error("Failed to load stats");
+      setStats((await res.json()) as Stats);
+      setIsLive(true);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load stats");
@@ -525,7 +535,7 @@ export default function StatsPage() {
   }
 
   useEffect(() => {
-    setLastUpdated(new Date());
+    refresh();
   }, []);
 
   return (
@@ -534,7 +544,7 @@ export default function StatsPage() {
         <div>
           <h1 className="text-xl font-bold">Registration Statistics</h1>
           <p className="text-xs text-muted-foreground">
-            Placeholder data. Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : "-"}
+            {isLive ? "Live data" : "Placeholder data"}. Last updated:{" "}
           </p>
         </div>
 
@@ -550,7 +560,7 @@ export default function StatsPage() {
       )}
 
       {/* TOP/MOST IMPORTANT STATS */}
-      <Section title="Registrations" note="Source: registration form (placeholder)">
+      <Section title="Registrations" note={sourceNote}>
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           <div className="space-y-3 lg:col-span-2">
             <LineChart title="Registrations over time (weekly)" items={stats.registrationsByWeek} />
@@ -568,7 +578,7 @@ export default function StatsPage() {
         </div>
       </Section>
 
-      <Section title="Event logistics" note="Source: registration form (placeholder)">
+      <Section title="Event logistics" note="Source: registration form">
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <BarList title="Dietary restrictions" items={stats.dietary} />
           <ColumnChart title="T-shirt sizes" items={stats.tshirts} />
@@ -576,7 +586,7 @@ export default function StatsPage() {
       </Section>
 
       {/* BOTTOM/LESS IMPORTANT STATS */}
-      <Section title="Who is coming?" note="Source: registration form (placeholder)">
+      <Section title="Who is coming?" note="Source: registration form">
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           <PieCard title="Level of study" items={stats.levelOfStudy} />
           <PieCard title="First-time vs. returning" items={stats.experience} />
@@ -592,7 +602,7 @@ export default function StatsPage() {
 
       <Section
         title="Skills, interests and teams"
-        note="Unsure if needed. Delete this section if not."
+        note="Source: registration form"
       >
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           <BarList title="Areas of interest" items={stats.interests} />
