@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db, fetchAll } from "@/lib/db";
-import { requireNonOrganizerSession } from "@/lib/api/route-utils";
+import { requireAuthenticatedSession } from "@/lib/api/session-auth"; 
 
 export const dynamic = "force-dynamic";
 
@@ -65,9 +65,9 @@ function byWeek(dates: string[]): Item[] {
 }
 
 export async function GET() {
-  // Admins and leads only (same check the events routes use)
-  const auth = await requireNonOrganizerSession();
-  if ("error" in auth) {
+  // Any signed-in dashboard user (same check the Event Stats route uses)
+  const auth = await requireAuthenticatedSession();
+  if (auth.error) {
     return auth.error;
   }
 
